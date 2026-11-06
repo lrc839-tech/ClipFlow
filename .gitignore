@@ -1,0 +1,26 @@
+.build/
+.swiftpm/
+dist/
+output/
+.DS_Store
+__pycache__/
+
+# Local clipboard data and diagnostics must never be published.
+*.sqlite
+*.sqlite3
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3-wal
+*.sqlite3-shm
+blobs/
+*.log
+*.app/
+*.zip
+
+# Local credentials and signing material.
+.env
+.env.*
+*.p12
+*.p8
+*.key
+*.pem
