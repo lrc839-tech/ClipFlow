@@ -4,6 +4,16 @@
 
 当前版本为 **0.3.0 开发预览**，尚未完成全部跨应用和连续粘贴验收。仓库包含源码、测试、构建脚本与阶段验证记录。
 
+## 普通用户安装（无需编译）
+
+1. 打开 [GitHub Releases 下载页](https://github.com/lrc839-tech/ClipFlow/releases/tag/v0.3.0)，在 **Assets** 下载 **[ClipFlow-0.3.0-macOS-arm64.dmg](https://github.com/lrc839-tech/ClipFlow/releases/download/v0.3.0/ClipFlow-0.3.0-macOS-arm64.dmg)**。Source code 压缩包是源码，不是安装包。
+2. 双击 DMG，把 `ClipFlow.app` 拖到窗口里的 `Applications`（应用程序）文件夹；从 Mac 的应用程序文件夹打开，不要在 DMG 里直接运行。DMG 里同时附有“安装与首次打开说明”HTML和文本文件。
+3. **首次打开如果被系统拦截**：先尝试打开一次，关闭拦截提示；打开“系统设置 → 隐私与安全性”，在安全性区域找到 ClipFlow，点击“仍要打开 / Open Anyway”，按要求本人验证身份，再在确认框点击“打开”。不需要反复双击固定次数；若提示未出现，可重新尝试打开一次后返回设置。此流程参考 [Apple 官方说明](https://support.apple.com/zh-cn/102445)。
+4. **单独授权输入权限**：到“隐私与安全性 → 辅助功能”（部分系统称“设备控制和数据访问”），添加并启用刚安装的 ClipFlow。退出重开，或点“重试注册”，确认“输入权限已就绪”和“Command接管中：12/12”。“仍要打开”不等于已获得辅助功能权限。
+5. 正常 Command+C 复制内容，先点击目标输入框，再按 Command+1～9、0、-、= 粘贴当前对应记录；在历史页置顶后，该记录优先占用快捷键。完整流程、更新与排障见 **[安装与首次使用](docs/INSTALL.md)**。
+
+安装包仅适用于 **Apple Silicon（M系列）Mac**，不是 Intel 或 Windows 版本。当前采用临时签名，**尚未完成 Developer ID 签名与 Apple 公证**。若提示“将损坏你的电脑”或“已损坏”，请停止安装并重新下载、核对发布页SHA-256，参照安装说明排障；不要把这类提示一律当作普通未公证提示。安装不要求关闭系统安全保护或执行移除隔离属性的命令。
+
 ## 功能
 
 - 菜单栏常驻，关闭管理窗口后继续运行。
@@ -17,9 +27,17 @@
 
 Markdown 保留剪贴板中提供的源码和原始字节，不从已渲染网页推测或还原原始 Markdown。文件仅保存引用，不备份文件本体；移动或删除源文件可能导致旧记录失效。
 
-## 构建与运行
+## 开发者：从源码构建
 
 需要 macOS 和 Swift 6 工具链（Xcode 或 Command Line Tools），系统自带 SQLite，无第三方包依赖。
+
+如果没有安装开发工具，先在终端执行下列命令，并在系统安装窗口完成安装（已有合适工具链可跳过）：
+
+```sh
+xcode-select --install
+```
+
+工具安装完成后，再执行：
 
 ```sh
 git clone https://github.com/lrc839-tech/ClipFlow.git
@@ -34,8 +52,8 @@ App 使用临时签名，未做 Developer ID 签名或公证。当前实际测�
 
 ### 输入权限
 
-1. 打开 `~/Applications/ClipFlow.app`。
-2. 到系统设置 → 隐私与安全性 → 辅助功能（部分系统显示“设备控制和数据访问”），添加并启用本机 App。
+1. 打开安装位置的 ClipFlow：DMG 安装通常为 `/Applications/ClipFlow.app`，源码脚本安装为 `~/Applications/ClipFlow.app`。
+2. 到系统设置 → 隐私与安全性 → 辅助功能（部分系统显示“设备控制和数据访问”），添加并启用该实际安装副本。
 3. 退出重开，或点击历史页“重试注册”，确认权限就绪和快捷键注册状态。
 
 重新构建会改变临时签名。旧条目即使显示开启，也可能不匹配新二进制；需要移除旧条目并重新添加当前 App。不要修改 TCC 数据库或关闭系统安全保护。
@@ -91,6 +109,14 @@ Command 模式会占用浏览器切标签、缩放等同组合功能。历史页
 - `Sources/ClipFlowTarget`：独立输入接收窗口，日志保留内容摘要，不保留输入明文。
 - `Tests/ClipFlowCoreTests`：核心自动化测试。
 - `scripts`：构建、测试与需显式运行的实验脚本。
+
+制作DMG时可复用已经构建并验签的App，不重新构建或改签名：
+
+```sh
+python3 scripts/package_dmg.py --app "$HOME/Applications/ClipFlow.app"
+```
+
+输出DMG与`SHA256SUMS.txt`到`dist/`；安装说明从`docs/INSTALL.md`同步嵌入。此脚本只打包App、说明和生成的公开元数据，不复制历史、用户配置或日志。
 
 ```sh
 # 隔离临时数据库中的真实崩溃恢复实验
