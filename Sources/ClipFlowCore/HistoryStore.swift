@@ -2,6 +2,13 @@ import Foundation
 import CryptoKit
 import CSQLite
 import Darwin
+import UniformTypeIdentifiers
+
+public struct HistoryImageResource: Sendable {
+    public let url: URL
+    public let fingerprint: String
+    public let isRTFD: Bool
+}
 
 public struct CompletedRichTextImages: Sendable {
     public let snapshot: PasteboardSnapshot
@@ -431,6 +438,44 @@ public actor HistoryStore {
         let snapshot = try materialize(manifest)
         guard snapshot.fingerprint == fingerprint else { throw HistoryStoreError.corruptIndex }
         return snapshot
+    }
+
+    /// Only trusted local blob URLs leave this actor; the preview worker reads
+    /// them independently so image decoding cannot stall clipboard transactions.
+    public func imagePreviewResources(id: UUID) throws -> [HistoryImageResource] {
+        let query = try database.prepare("SELECT COALESCE((SELECT prepared_history.manifest FROM prepared_history WHERE history_id=history.id AND source_fingerprint=history.fingerprint),history.manifest) FROM history WHERE id=?")
+        try query.bind(id.uuidString, at: 1)
+        guard try query.next() else { return [] }
+        guard let manifest = try? JSONDecoder().decode(HistoryManifest.self, from: Data(try query.text(at: 0).utf8)), manifest.version == 1 else { throw HistoryStoreError.corruptIndex }
+        var result: [HistoryImageResource] = []
+        for item in manifest.items {
+            // Prefer a single native image per pasteboard item, avoiding duplicate
+            // TIFF/PNG representations of the same photograph.
+            let image = item.representations.first { $0.type == "public.png" } ?? item.representations.first { UTType($0.type)?.conforms(to: .image) == true }
+            let rich = item.representations.first { $0.type == "com.apple.flat-rtfd" }
+            guard let ref = rich ?? image else {
+                // Older versions retained image-file references without pixels.
+                // Preview only readable local image files; never fetch a URL.
+                if let file = item.representations.first(where: { $0.type == "public.file-url" }),
+                   Self.validHash(file.hash), file.length <= 64 * 1024,
+                   let bytes = try? Data(contentsOf: blobDirectory.appendingPathComponent(file.hash)),
+                   let text = String(data: bytes, encoding: .utf8), let raw = URL(string: text), raw.isFileURL {
+                    let resolved = (raw as NSURL).filePathURL ?? raw
+                    if UTType(filenameExtension: resolved.pathExtension)?.conforms(to: .image) == true,
+                       let attrs = try? resolved.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey]),
+                       attrs.isRegularFile == true, let length = attrs.fileSize, length <= Self.maximumSnapshotBytes {
+                        result.append(.init(url: resolved, fingerprint: file.hash + ":\(length):\(attrs.contentModificationDate?.timeIntervalSince1970 ?? 0)", isRTFD: false))
+                    }
+                }
+                continue
+            }
+            guard Self.validHash(ref.hash), (0...Self.maximumSnapshotBytes).contains(ref.length) else { throw HistoryStoreError.corruptIndex }
+            let url = blobDirectory.appendingPathComponent(ref.hash)
+            let attrs = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
+            guard attrs?.isRegularFile == true, attrs?.isSymbolicLink != true, attrs?.fileSize == ref.length else { throw HistoryStoreError.missingBlob }
+            result.append(.init(url: url, fingerprint: ref.hash, isRTFD: rich != nil))
+        }
+        return result
     }
 
     public func setPinned(id: UUID, pinned: Bool) throws {

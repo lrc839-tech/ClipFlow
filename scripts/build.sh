@@ -10,7 +10,7 @@ if [[ "$stage" == m0 ]]; then
 elif [[ "$stage" == m1 ]]; then
   products=(ClipFlowApp)
   local_apps="${CLIPFLOW_INSTALL_DIR:-$HOME/Applications}"
-  archive="dist/ClipFlow-0.5.zip"
+  archive="dist/ClipFlow-0.6.zip"
 else
   echo "Usage: $0 [m0|m1]" >&2
   exit 2
@@ -37,7 +37,7 @@ for product in $products; do
     display="ClipFlow"
     identifier="local.lrc.clipflow"
     agent=true
-    version="0.5.0"
+    version="0.6.0"
   fi
   cat > "$bundle/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

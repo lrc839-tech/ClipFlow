@@ -38,7 +38,7 @@ def main():
     if info.get('CFBundleIdentifier') != 'local.lrc.clipflow':
         parser.error('unexpected bundle identifier')
     version = info['CFBundleShortVersionString']
-    if version != '0.5.0':
+    if version != '0.6.0':
         parser.error('update the installation guide and release version before packaging')
     binary = app / 'Contents/MacOS' / info['CFBundleExecutable']
     if run('/usr/bin/lipo', '-archs', str(binary)).strip() != 'arm64':

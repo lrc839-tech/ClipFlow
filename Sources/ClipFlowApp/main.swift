@@ -15,6 +15,10 @@ final class ClipFlowDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var store: HistoryStore?
     private let hotkeys = HotKeyService()
     private let pasteService = TextPasteService()
+    private let imagePreviews = HistoryImagePreviews()
+    private var menuThumbnails: [UUID: NSImage] = [:]
+    private var completedThumbnails = Set<UUID>()
+    private var loadingThumbnails = Set<UUID>()
     private lazy var takeover = HotKeyTakeover(settings: HotKeySettings.load(from: .standard), register: { [unowned self] scheme in self.hotkeys.register(scheme: scheme) }, release: { [unowned self] in self.hotkeys.unregister() })
     private var activationObserver: NSObjectProtocol?
     private var lastExternalBundleID: String?
@@ -236,6 +240,7 @@ final class ClipFlowDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard !quitting else { return }
             if try await store.savePreparedSnapshot(id: id, sourceFingerprint: record.fingerprint, result: completed) {
                 imageFailures[id] = nil
+                completedThumbnails.remove(id); menuThumbnails[id] = nil
                 diagnostic("已补全并保存 \(completed.imageCount) 张图片，可复制或快捷粘贴。")
                 browser.notify(lastDiagnostic)
             }
@@ -295,6 +300,8 @@ final class ClipFlowDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let summary = (record.snapshot.summary).replacingOccurrences(of: "\n", with: " ↵ ").replacingOccurrences(of: "\r", with: " ")
             item("\(takeover.settings.scheme.symbol)\(HotKeyService.labels[index])  \(summary.prefix(64))", #selector(pasteFromMenu(_:)), tag: index + 1)
             menu.items.last?.representedObject = record.id.uuidString
+            menu.items.last?.image = menuThumbnails[record.id]
+            if !completedThumbnails.contains(record.id), !loadingThumbnails.contains(record.id) { loadMenuThumbnail(record.id) }
         }
         statusItem.menu = menu
         browser.slots = records.map(\.id)
@@ -314,8 +321,33 @@ final class ClipFlowDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if browserIDs != browser.slots { browserIDs = browser.slots; browser.refresh() }
     }
 
+    private func loadMenuThumbnail(_ id: UUID) {
+        guard let store else { return }
+        loadingThumbnails.insert(id)
+        Task {
+            defer { loadingThumbnails.remove(id) }
+            let previews = try? await imagePreviews.images(id: id, store: store, size: 160)
+            completedThumbnails.insert(id)
+            if let preview = previews?.first, let image = NSImage(data: preview.png) {
+                let scale = min(72 / image.size.width, 48 / image.size.height)
+                image.size = NSSize(width: image.size.width * scale, height: image.size.height * scale)
+                menuThumbnails[id] = image
+                // Update the displayed item in place. Rebuilding a tracking menu
+                // could move the item under the pointer or disturb its target.
+                statusItem.menu?.items.first(where: { ($0.representedObject as? String) == id.uuidString })?.image = image
+                writeReport()
+            }
+            if completedThumbnails.count > 128 {
+                let keep = Set(records.map(\.id))
+                completedThumbnails.formIntersection(keep)
+                menuThumbnails = menuThumbnails.filter { keep.contains($0.key) }
+            }
+        }
+    }
+
     private func makeWindow() {
         browser = HistoryBrowser()
+        browser.imagePreviews = imagePreviews
         browser.onHotkeyCommand = { [weak self] command,value in self?.configureHotkeys(command,value) }
         browser.onCommand = { [weak self] command,id in
             guard let self else { return }
@@ -404,10 +436,10 @@ final class ClipFlowDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func writeReport() {
         let logs = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/ClipFlow")
-        var report: [String: Any] = ["stage": "v0.5-dingtalk-images", "appVersion": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "",
+        var report: [String: Any] = ["stage": "v0.6-image-previews", "appVersion": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "",
             "ready": ready, "paused": monitor?.paused ?? true,
             "accessibilityTrusted": AXIsProcessTrusted(), "postEventAllowed": CGPreflightPostEventAccess(),
-            "autoCompleteDingTalkImages": autoCompleteImages, "pendingImageCount": pendingImageIDs.count,
+            "autoCompleteDingTalkImages": autoCompleteImages, "pendingImageCount": pendingImageIDs.count, "menuImagePreviewCount": statusItem.menu?.items.filter { $0.image != nil }.count ?? 0,
             "savedCopiesThisRun": savedCopies, "cachedRecordIDsNewestFirst": records.map { $0.id.uuidString },
             "hotkeyTakeoverEnabled": takeover.settings.enabled,
             "hotkeyScheme": takeover.settings.scheme.rawValue,
