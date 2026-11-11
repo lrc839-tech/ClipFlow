@@ -289,7 +289,8 @@ final class ClipFlowDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         menu.delegate = self
         item("设置", #selector(showWindow))
-        label("全局快捷键 \(registrations.filter(\.registered).count)/12 · AX \(AXIsProcessTrusted() ? "已授权" : "未授权") · 发键 \(CGPreflightPostEventAccess() ? "已授权" : "未授权")")
+        item("全局快捷键 \(registrations.filter(\.registered).count)/12 · AX \(AXIsProcessTrusted() ? "已授权" : "未授权") · 发键 \(CGPreflightPostEventAccess() ? "已授权" : "未授权") · 打开授权", #selector(openPermissions))
+        menu.items.last?.identifier = NSUserInterfaceItemIdentifier("permissionsStatus")
         label(takeover.status)
         item("Command + 1234567890-=", #selector(useCommand), checked: takeover.settings.scheme == .command)
         item("Option + 1234567890-=（回退）", #selector(useOption), checked: takeover.settings.scheme == .option)
@@ -300,8 +301,12 @@ final class ClipFlowDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let summary = (record.snapshot.summary).replacingOccurrences(of: "\n", with: " ↵ ").replacingOccurrences(of: "\r", with: " ")
             item("\(takeover.settings.scheme.symbol)\(HotKeyService.labels[index])  \(summary.prefix(64))", #selector(pasteFromMenu(_:)), tag: index + 1)
             menu.items.last?.representedObject = record.id.uuidString
-            menu.items.last?.image = menuThumbnails[record.id]
-            if !completedThumbnails.contains(record.id), !loadingThumbnails.contains(record.id) { loadMenuThumbnail(record.id) }
+            if record.snapshot.contentKind == "file", let url = record.snapshot.fileURLs.first {
+                menu.items.last?.image = HistoryFileIcons.image(for: HistoryFilePresentation(url: url))
+            } else {
+                menu.items.last?.image = menuThumbnails[record.id]
+                if !completedThumbnails.contains(record.id), !loadingThumbnails.contains(record.id) { loadMenuThumbnail(record.id) }
+            }
         }
         statusItem.menu = menu
         browser.slots = records.map(\.id)
@@ -436,10 +441,14 @@ final class ClipFlowDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func writeReport() {
         let logs = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/ClipFlow")
-        var report: [String: Any] = ["stage": "v0.6-image-previews", "appVersion": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "",
+        var report: [String: Any] = ["stage": "v0.6.1-file-presentation", "appVersion": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "",
             "ready": ready, "paused": monitor?.paused ?? true,
             "accessibilityTrusted": AXIsProcessTrusted(), "postEventAllowed": CGPreflightPostEventAccess(),
-            "autoCompleteDingTalkImages": autoCompleteImages, "pendingImageCount": pendingImageIDs.count, "menuImagePreviewCount": statusItem.menu?.items.filter { $0.image != nil }.count ?? 0,
+            "autoCompleteDingTalkImages": autoCompleteImages, "pendingImageCount": pendingImageIDs.count, "menuImagePreviewCount": statusItem.menu?.items.filter { entry in
+                entry.image != nil && records.first(where: { $0.id.uuidString == entry.representedObject as? String })?.snapshot.contentKind != "file"
+            }.count ?? 0,
+            "menuFileIconCount": records.filter { $0.snapshot.contentKind == "file" }.count,
+            "permissionStatusClickable": statusItem.menu?.items.first(where: { $0.identifier?.rawValue == "permissionsStatus" })?.isEnabled == true,
             "savedCopiesThisRun": savedCopies, "cachedRecordIDsNewestFirst": records.map { $0.id.uuidString },
             "hotkeyTakeoverEnabled": takeover.settings.enabled,
             "hotkeyScheme": takeover.settings.scheme.rawValue,

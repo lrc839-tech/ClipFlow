@@ -83,6 +83,7 @@ import PDFKit
                         if let slot = slots.firstIndex(of: id) { object[index]["shortcut"] = hotkeyScheme.symbol + HotKeyService.labels[slot] + (hotkeyEnabled ? "" : "（已释放）") }
                         object[index]["imagePending"] = pendingImageIDs.contains(id)
                         object[index]["imageFailure"] = imageFailures[id] ?? ""
+                        object[index]["files"] = filePayload(rows[index].files)
                     }
                 }
                 let stats = try await store.stats()
@@ -90,7 +91,7 @@ import PDFKit
                 send(["rows":object,"total":stats.recordCount,"offset":page,"bytes":stats.totalBytes,"authorized":AXIsProcessTrusted() && CGPreflightPostEventAccess()])
                 for row in rows {
                     guard current == generation else { return }
-                    if row.kind == "image" || row.kind == "rich" || row.types.contains("public.file-url") {
+                    if row.kind == "image" || row.kind == "rich" {
                         let images = try? await imagePreviews.images(id: row.id, store: store, size: 280)
                         guard current == generation else { return }
                         view.callAsyncJavaScript("window.setThumbnail(id,url)", arguments: ["id":row.id.uuidString,"url":images?.first?.dataURL ?? ""], in:nil, in:.page, completionHandler:nil)
@@ -105,6 +106,9 @@ import PDFKit
     private func send(_ payload: [String: Any]) {
         view.callAsyncJavaScript("window.render(payload)", arguments: ["payload":payload], in: nil, in: .page, completionHandler: nil)
     }
+    private func filePayload(_ files: [HistoryFilePresentation]) -> [[String:String]] {
+        files.map { ["name":$0.name,"typeLabel":$0.typeLabel,"icon":HistoryFileIcons.dataURL(for:$0)] }
+    }
     private func preview(_ id: UUID) {
         guard let store else { return }
         previewGeneration += 1
@@ -116,14 +120,15 @@ import PDFKit
                 let prepared = try await store.preparedSnapshot(id: id)
                 let snap = prepared ?? row.snapshot
                 var urls = images.map(\.dataURL)
-                if urls.isEmpty, let data = snap.items.first?.representations["com.adobe.pdf"], let page = PDFDocument(data:data)?.page(at:0),
+                if snap.contentKind != "file", urls.isEmpty, let data = snap.items.first?.representations["com.adobe.pdf"], let page = PDFDocument(data:data)?.page(at:0),
                    let tiff = page.thumbnail(of:NSSize(width:700,height:900),for:.mediaBox).tiffRepresentation,
                    let bitmap = NSBitmapImageRep(data:tiff), let png = bitmap.representation(using:.png,properties:[:]) {
                     urls = ["data:image/png;base64," + png.base64EncodedString()]
                 }
                 guard token == previewGeneration else { return }
                 let text = String((snap.plainText ?? snap.summary).prefix(50_000))
-                view.callAsyncJavaScript("window.preview(text,urls)",arguments:["text":text,"urls":urls],in:nil,in:.page,completionHandler:nil)
+                let files = snap.contentKind == "file" ? filePayload(snap.fileURLs.map(HistoryFilePresentation.init)) : []
+                view.callAsyncJavaScript("window.preview(text,urls,files)",arguments:["text":text,"urls":urls,"files":files],in:nil,in:.page,completionHandler:nil)
             } catch { if token == previewGeneration { notify(error.localizedDescription) } }
         }
     }
@@ -131,7 +136,7 @@ import PDFKit
 <!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>ClipFlow 设置与历史</title><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; base-uri 'none'; form-action 'none'">
 <style>
-:root{font:14px -apple-system,BlinkMacSystemFont,sans-serif;color:#243047;background:#f3f6fb}*{box-sizing:border-box}body{margin:0}header{background:#fff;padding:25px 30px;border-bottom:1px solid #e2e7ef;display:flex;justify-content:space-between;align-items:center}h1{margin:0;font-size:26px;letter-spacing:-1px}small{color:#708095}button,input,select{font:inherit}button{cursor:pointer;border:1px solid #d4deeb;background:white;border-radius:7px;padding:7px 11px;color:#324568}button:hover{background:#eaf1fe}button.selected{background:#dce7ff;border-color:#6486dd;color:#153fa6}input{flex:1;min-width:100px;padding:11px;border:1px solid #d4deeb;border-radius:9px}select{padding:9px;border:1px solid #d4deeb;border-radius:9px;background:white}.bar{display:flex;gap:10px;padding:20px 30px}.layout{display:grid;grid-template-columns:minmax(350px,1fr) minmax(220px,.65fr);gap:20px;padding:0 30px 25px}.row{background:white;border:1px solid #e1e7f0;border-radius:11px;margin-bottom:10px;padding:15px}.row.pinned{border-left:4px solid #436ff1}.meta{display:flex;gap:8px;align-items:center;color:#7b879d;font-size:12px}.badge{background:#eef2ff;color:#4164c6;padding:3px 7px;border-radius:5px}.content{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.6;margin:10px 0;max-height:90px;overflow:hidden}.actions{display:flex;gap:6px}aside{background:white;padding:20px;border-radius:12px;align-self:start;position:sticky;top:15px}pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:400px;overflow:auto;font:13px/1.6 -apple-system,sans-serif}img{max-width:100%;max-height:500px}.thumb{display:block;max-width:180px;max-height:116px;object-fit:contain;margin:12px 0;border-radius:7px;border:1px solid #dce3ef;cursor:zoom-in;background:#f4f6fa}.thumb[hidden]{display:none}.preview-image{display:block;margin:12px 0;cursor:zoom-in}dialog{border:0;border-radius:14px;max-width:94vw;max-height:94vh;padding:18px}dialog::backdrop{background:#142037bb}dialog img{display:block;max-width:88vw;max-height:82vh}.image-state{color:#7b879d;font-size:12px}footer{display:flex;justify-content:space-between;align-items:center;padding:10px 0}#status{padding:8px 30px;color:#5f708b;overflow-wrap:anywhere}.note{font-size:12px;color:#7b879d;line-height:1.7}@media(max-width:720px){.layout{grid-template-columns:1fr}.bar{flex-wrap:wrap}}
+:root{font:14px -apple-system,BlinkMacSystemFont,sans-serif;color:#243047;background:#f3f6fb}*{box-sizing:border-box}body{margin:0}header{background:#fff;padding:25px 30px;border-bottom:1px solid #e2e7ef;display:flex;justify-content:space-between;align-items:center}h1{margin:0;font-size:26px;letter-spacing:-1px}small{color:#708095}button,input,select{font:inherit}button{cursor:pointer;border:1px solid #d4deeb;background:white;border-radius:7px;padding:7px 11px;color:#324568}button:hover{background:#eaf1fe}button.selected{background:#dce7ff;border-color:#6486dd;color:#153fa6}input{flex:1;min-width:100px;padding:11px;border:1px solid #d4deeb;border-radius:9px}select{padding:9px;border:1px solid #d4deeb;border-radius:9px;background:white}.bar{display:flex;gap:10px;padding:20px 30px}.layout{display:grid;grid-template-columns:minmax(350px,1fr) minmax(220px,.65fr);gap:20px;padding:0 30px 25px}.row{background:white;border:1px solid #e1e7f0;border-radius:11px;margin-bottom:10px;padding:15px}.row.pinned{border-left:4px solid #436ff1}.meta{display:flex;gap:8px;align-items:center;color:#7b879d;font-size:12px}.badge{background:#eef2ff;color:#4164c6;padding:3px 7px;border-radius:5px}.content{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.6;margin:10px 0;max-height:90px;overflow:hidden}.actions{display:flex;gap:6px}aside{background:white;padding:20px;border-radius:12px;align-self:start;position:sticky;top:15px}pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:400px;overflow:auto;font:13px/1.6 -apple-system,sans-serif}img{max-width:100%;max-height:500px}.thumb{display:block;max-width:180px;max-height:116px;object-fit:contain;margin:12px 0;border-radius:7px;border:1px solid #dce3ef;cursor:zoom-in;background:#f4f6fa}.thumb[hidden]{display:none}.preview-image{display:block;margin:12px 0;cursor:zoom-in}dialog{border:0;border-radius:14px;max-width:94vw;max-height:94vh;padding:18px}dialog::backdrop{background:#142037bb}dialog img{display:block;max-width:88vw;max-height:82vh}.file-list{display:grid;gap:8px;margin:10px 0}.file-entry{display:flex;gap:10px;align-items:center;overflow-wrap:anywhere}.file-icon{width:28px;height:28px;object-fit:contain;flex:none}.file-name{font-size:13px;line-height:1.5}.image-state{color:#7b879d;font-size:12px}footer{display:flex;justify-content:space-between;align-items:center;padding:10px 0}#status{padding:8px 30px;color:#5f708b;overflow-wrap:anywhere}.note{font-size:12px;color:#7b879d;line-height:1.7}@media(max-width:720px){.layout{grid-template-columns:1fr}.bar{flex-wrap:wrap}}
 </style>
 <header><div><h1>ClipFlow <small>设置与历史</small></h1><div id="auth" class="note"></div><div class="note">置顶仅移到第1条 · 新复制排在前面 · 粘贴不改变排序</div></div><div><button onclick="send('pause')">暂停 / 恢复</button> <button onclick="send('permissions')">权限设置</button></div></header>
 <section style="padding:14px 30px;background:#edf2ff"><strong id="keyStatus">正在检查快捷键…</strong><div style="display:flex;gap:8px;margin:10px 0;flex-wrap:wrap"><button id="toggleKeys" onclick="send('hotkeysToggle')">释放快捷键</button><button id="cmdMode" onclick="send('hotkeysCommand')">Command 模式</button><button id="optMode" onclick="send('hotkeysOption')">Option 回退</button><button onclick="send('hotkeysRetry')">重试注册</button></div><details><summary>按应用排除</summary><p class="note">被排除应用置于前台后，释放全部12键，恢复其原快捷键。应用切换存在通知处理间隔，请等待状态切换；排除不暂停剪贴板收录。</p><textarea id="exclusions" rows="2" style="width:100%;font:inherit" placeholder="应用 Bundle ID，每行一个，例如 com.microsoft.edgemac"></textarea><button onclick="window.webkit.messageHandlers.history.postMessage({action:'hotkeysExclusions',value:$('exclusions').value})">保存排除列表</button> <button id="excludeLast" onclick="send('hotkeysExcludeLast')">排除上次前台应用</button></details><p class="note">接管开启会占用浏览器切标签、缩放等同组合功能；无法保证抢占系统或其他已注册全局快捷键。空槽仍占用组合。暂停监听与释放快捷键相互独立。</p></section>
@@ -157,7 +162,7 @@ import PDFKit
 <button onclick="send('quit')">退出 ClipFlow</button>
 </details>
 <div class="bar"><input id="query" placeholder="搜索摘要、文件名或格式标识（文本前4096字节）"><select id="kind"><option value="">全部格式</option><option value="text">纯文本</option><option value="markdown">Markdown</option><option value="rich">富文本 / HTML</option><option value="image">图片</option><option value="file">文件</option><option value="pdf">PDF</option><option value="custom">自定义</option></select><button onclick="page=0;load()">刷新</button></div>
-<div id="status">正在读取本地历史…</div><div class="layout"><main><div id="list"></div><footer><button id="prev">上一页</button><span id="count"></span><button id="next">下一页</button></footer></main><aside><h3>内容预览</h3><div id="pictures"></div><pre id="preview">选择一条记录查看内容。图片与 PDF 可查看缩略图。</pre><p class="note">复制后可到目标应用按 Command+V。图片以图像格式提供，其他文件保存引用。删除仅移除历史索引，数据文件暂保留。</p></aside></div><dialog id="zoom"><button onclick="$('zoom').close()">关闭大图</button><img id="zoomImage" alt="历史图片大图"></dialog>
+<div id="status">正在读取本地历史…</div><div class="layout"><main><div id="list"></div><footer><button id="prev">上一页</button><span id="count"></span><button id="next">下一页</button></footer></main><aside><h3>内容预览</h3><div id="previewFiles" class="file-list"></div><div id="pictures"></div><pre id="preview">选择一条记录查看内容。图片与 PDF 可查看缩略图。</pre><p class="note">复制后可到目标应用按 Command+V。图片以图像格式提供，其他文件保存引用。删除仅移除历史索引，数据文件暂保留。</p></aside></div><dialog id="zoom"><button onclick="$('zoom').close()">关闭大图</button><img id="zoomImage" alt="历史图片大图"></dialog>
 <script>
 let page=0,timer;const $=id=>document.getElementById(id);function send(action,id){window.webkit.messageHandlers.history.postMessage({action,id})}function load(){window.webkit.messageHandlers.history.postMessage({action:'list',query:$('query').value,kind:$('kind').value,offset:page})}
 $('query').oninput=()=>{clearTimeout(timer);timer=setTimeout(()=>{page=0;load()},250)};$('kind').onchange=()=>{page=0;load()};$('prev').onclick=()=>{page=Math.max(0,page-50);load()};$('next').onclick=()=>{page+=50;load()};
@@ -220,11 +225,14 @@ for (const row of data.rows) {
   thumbnail.onclick = () => send('preview', row.id);
   const imageState = document.createElement('div'); imageState.className = 'image-state';
   imageState.textContent = row.kind === 'image' ? '正在加载图片预览…' : '';
-  card.append(meta, thumbnail, imageState, content, actions);
+  const files = fileList(row.files || []);
+  card.append(meta, thumbnail, imageState, files, content, actions);
+  if (row.kind === 'file' && (row.files || []).length) content.hidden = true;
   list.append(card);
 }};
 window.setThumbnail=(id,url)=>{const card=Array.from($('list').children).find(x=>x.dataset.id===id);if(!card)return;const image=card.querySelector('.thumb');image.hidden=!url;if(url)image.src=url;card.querySelector('.image-state').textContent=url?'':card.querySelector('.content').textContent==='图片'?'图片预览不可用，仍可尝试复制原内容。':''};
-window.preview=(text,urls)=>{$('preview').textContent=text;const pictures=$('pictures');pictures.replaceChildren();for(const url of urls){const img=document.createElement('img');img.src=url;img.alt='历史图片预览，点击放大';img.className='preview-image';img.onclick=()=>{$('zoomImage').src=url;$('zoom').showModal()};pictures.append(img)}};
+function fileList(files){const list=document.createElement('div');list.className='file-list';for(const file of files){const entry=document.createElement('div');entry.className='file-entry';const icon=document.createElement('img');icon.className='file-icon';icon.alt=file.typeLabel+' 文件类型图标';if(file.icon)icon.src=file.icon;else icon.hidden=true;const label=document.createElement('div');label.className='file-name';label.textContent=file.name+' · '+file.typeLabel;entry.append(icon,label);list.append(entry)}return list}
+window.preview=(text,urls,files=[])=>{$('previewFiles').replaceChildren(fileList(files));$('preview').textContent=files.length?'文件引用，复制后可在支持文件的目标应用中粘贴。':text;const pictures=$('pictures');pictures.replaceChildren();for(const url of urls){const img=document.createElement('img');img.src=url;img.alt='历史图片预览，点击放大';img.className='preview-image';img.onclick=()=>{$('zoomImage').src=url;$('zoom').showModal()};pictures.append(img)}};
 
 </script></html>
 """#

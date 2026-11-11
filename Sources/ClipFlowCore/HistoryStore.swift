@@ -374,34 +374,40 @@ public actor HistoryStore {
             guard let id = UUID(uuidString: try rows.text(at: 0)),
                   let manifest = try? JSONDecoder().decode(HistoryManifest.self, from: Data(try rows.text(at: 2).utf8)) else { throw HistoryStoreError.corruptIndex }
             let types = manifest.items.flatMap { $0.representations.map(\.type) }
-            let category = PasteboardSnapshot.contentKind(types: types)
+            let partial = try presentationSnapshot(manifest)
+            let category = PasteboardSnapshot.contentKind(types: types, fileURLs: partial.fileURLs)
             if !kind.isEmpty && category != kind { continue }
-            var smallItems: [PasteboardItemSnapshot] = []
-            for item in manifest.items {
-                var representations: [String: Data] = [:]
-                for ref in item.representations where ["public.utf8-plain-text", "public.file-url", "NSFilenamesPboardType", "net.daringfireball.markdown", "public.markdown", "text/markdown"].contains(ref.type) {
-                    guard Self.validHash(ref.hash) else { throw HistoryStoreError.corruptIndex }
-                    let url = blobDirectory.appendingPathComponent(ref.hash)
-                    let values = try url.resourceValues(forKeys: [.isSymbolicLinkKey])
-                    guard values.isSymbolicLink != true else { throw HistoryStoreError.corruptBlob }
-                    let file = try FileHandle(forReadingFrom: url)
-                    defer { try? file.close() }
-                    let bytes = try file.read(upToCount: 4096) ?? Data()
-                    if ["public.utf8-plain-text", "net.daringfireball.markdown", "public.markdown", "text/markdown"].contains(ref.type) {
-                        representations[ref.type] = Data(String(decoding:bytes,as:UTF8.self).utf8)
-                    } else { representations[ref.type] = bytes }
-                }
-                smallItems.append(.init(representations: representations))
-            }
-            let partial = PasteboardSnapshot(items: smallItems)
             let preview = category == "image" ? "图片" : category == "file" ? partial.fileURLs.map(\.lastPathComponent).joined(separator: "、") : (partial.plainText ?? ["pdf":"PDF 文档", "rich":"富文本", "custom":"自定义格式"][category] ?? category)
             if !query.isEmpty && !preview.localizedCaseInsensitiveContains(query) && !(partial.plainText ?? "").localizedCaseInsensitiveContains(query) && !types.joined(separator: " ").localizedCaseInsensitiveContains(query) { continue }
             if skipped < max(0,offset) { skipped += 1; continue }
-            result.append(HistorySummary(id: id, preview: String(preview.prefix(500)), kind: category, pinned: false, copiedAt: try rows.number(at: 1), types: types, readyImageCount: Int(try rows.integer(at: 3))))
+            result.append(HistorySummary(id: id, preview: String(preview.prefix(500)), kind: category, pinned: false, copiedAt: try rows.number(at: 1), types: types, files: category == "file" ? partial.fileURLs.map(HistoryFilePresentation.init) : [], readyImageCount: Int(try rows.integer(at: 3))))
             if result.count >= min(100,max(1,limit)) { break }
         }
         return result
     }
+
+    private func presentationSnapshot(_ manifest: HistoryManifest) throws -> PasteboardSnapshot {
+        var smallItems: [PasteboardItemSnapshot] = []
+        for item in manifest.items {
+            var representations: [String: Data] = [:]
+            for ref in item.representations where ["public.utf8-plain-text", "public.file-url", "NSFilenamesPboardType", "net.daringfireball.markdown", "public.markdown", "text/markdown"].contains(ref.type) {
+                guard Self.validHash(ref.hash) else { throw HistoryStoreError.corruptIndex }
+                let url = blobDirectory.appendingPathComponent(ref.hash)
+                let values = try url.resourceValues(forKeys: [.isSymbolicLinkKey])
+                guard values.isSymbolicLink != true else { throw HistoryStoreError.corruptBlob }
+                let file = try FileHandle(forReadingFrom: url)
+                defer { try? file.close() }
+                let readLimit = ["public.file-url", "NSFilenamesPboardType"].contains(ref.type) ? min(ref.length, 2 * 1024 * 1024) : 4096
+                let bytes = try file.read(upToCount: readLimit) ?? Data()
+                if ["public.utf8-plain-text", "net.daringfireball.markdown", "public.markdown", "text/markdown"].contains(ref.type) {
+                    representations[ref.type] = Data(String(decoding:bytes,as:UTF8.self).utf8)
+                } else { representations[ref.type] = bytes }
+            }
+            smallItems.append(.init(representations: representations))
+        }
+        return PasteboardSnapshot(items: smallItems)
+    }
+
 
     /// Derived image bytes are separate from the source fingerprint and copy order.
     /// A late download never resurrects a deleted record or moves newer copies down.
@@ -447,6 +453,9 @@ public actor HistoryStore {
         try query.bind(id.uuidString, at: 1)
         guard try query.next() else { return [] }
         guard let manifest = try? JSONDecoder().decode(HistoryManifest.self, from: Data(try query.text(at: 0).utf8)), manifest.version == 1 else { throw HistoryStoreError.corruptIndex }
+        let partial = try presentationSnapshot(manifest)
+        let types = manifest.items.flatMap { $0.representations.map(\.type) }
+        guard PasteboardSnapshot.contentKind(types: types, fileURLs: partial.fileURLs) != "file" else { return [] }
         var result: [HistoryImageResource] = []
         for item in manifest.items {
             // Prefer a single native image per pasteboard item, avoiding duplicate
@@ -639,5 +648,6 @@ public struct HistorySummary: Codable, Sendable {
     public let pinned: Bool
     public let copiedAt: Double
     public let types: [String]
+    public let files: [HistoryFilePresentation]
     public let readyImageCount: Int
 }

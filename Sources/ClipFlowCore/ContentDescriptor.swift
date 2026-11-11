@@ -8,19 +8,29 @@ public enum FileReferenceError: LocalizedError {
 }
 
 public extension PasteboardSnapshot {
-    static func contentKind(types: [String]) -> String {
+    static func contentKind(types: [String], fileURLs: [URL] = []) -> String {
+        if types.contains(NSPasteboard.PasteboardType.fileURL.rawValue) || types.contains("NSFilenamesPboardType") {
+            // Finder can supply a PNG/TIFF/ICNS icon with a Word or PPT file.
+            // File provenance wins over those incidental image representations.
+            return !fileURLs.isEmpty && fileURLs.allSatisfy(isImageFile) ? "image" : "file"
+        }
         if types.contains(where: { ["net.daringfireball.markdown","public.markdown","text/markdown"].contains($0) }) { return "markdown" }
         if types.contains(NSPasteboard.PasteboardType.rtfd.rawValue) { return "rich" }
-        if types.contains(where: { UTType($0)?.conforms(to: .image) == true }) { return "image" }
-        if types.contains(NSPasteboard.PasteboardType.fileURL.rawValue) || types.contains("NSFilenamesPboardType") { return "file" }
+        if types.contains(where: isImageType) { return "image" }
         if types.contains("com.adobe.pdf") { return "pdf" }
         if types.contains(NSPasteboard.PasteboardType.rtf.rawValue) || types.contains(NSPasteboard.PasteboardType.html.rawValue) { return "rich" }
         if types.contains(NSPasteboard.PasteboardType.string.rawValue) { return "text" }
         return "custom"
     }
-    var contentKind: String { Self.contentKind(types: items.flatMap { Array($0.representations.keys) }) }
+    var contentKind: String { Self.contentKind(types: items.flatMap { Array($0.representations.keys) }, fileURLs: fileURLs) }
     var requiresSystemPaste: Bool { contentKind != "text" || items.count != 1 }
     var forSystemPaste: PasteboardSnapshot {
+        if contentKind == "file" {
+            return Self(items: items.map { item in
+                guard item.representations["public.file-url"] != nil || item.representations["NSFilenamesPboardType"] != nil else { return item }
+                return .init(representations: item.representations.filter { UTType($0.key)?.conforms(to: .image) != true })
+            })
+        }
         if contentKind == "image", !items.isEmpty, items.allSatisfy({ item in item.representations.keys.contains(where: Self.isImageType) }) {
             return Self(items: items.map { item in
                 .init(representations: item.representations.filter { Self.isImageType($0.key) })
@@ -62,9 +72,11 @@ public extension PasteboardSnapshot {
                 item.representations["public.file-url"] = pathBytes
             }
             result.items[index] = item
-            if item.representations.keys.contains(where: Self.isImageType) { continue }
             let single = Self(items: [item])
             let urls = single.fileURLs
+            // Ignore an incidental Finder icon when deciding whether actual image
+            // pixels still need materializing from an image-file reference.
+            if item.representations.keys.contains(where: Self.isImageType) { continue }
             let filename = single.plainText ?? ""
             let extensionHint = URL(fileURLWithPath: filename).pathExtension
             let fileType = UTType(filenameExtension: urls.first?.pathExtension ?? "") ?? UTType(filenameExtension: extensionHint)
@@ -99,9 +111,14 @@ public extension PasteboardSnapshot {
         guard retained <= maxBytes else { throw PasteboardSnapshotError.sizeLimitExceeded(limit: maxBytes) }
         return result
     }
-    private static func isImageType(_ type: String) -> Bool { UTType(type)?.conforms(to: .image) == true }
+    static func isImageFile(_ url: URL) -> Bool {
+        UTType(filenameExtension: url.pathExtension)?.conforms(to: .image) == true
+    }
+    private static func isImageType(_ type: String) -> Bool {
+        type != "com.apple.icns" && type != "com.microsoft.ico" && UTType(type)?.conforms(to: .image) == true
+    }
     func validateFileReferences() throws {
-        if contentKind == "file" {
+        if contentKind == "file" || (!fileURLs.isEmpty && !items.allSatisfy({ $0.representations.keys.contains(where: Self.isImageType) })) {
             guard !fileURLs.isEmpty, fileURLs.allSatisfy({ FileManager.default.isReadableFile(atPath: $0.path) }) else { throw FileReferenceError.unavailable }
         }
     }
@@ -110,5 +127,46 @@ public extension PasteboardSnapshot {
         if contentKind == "file" { return fileURLs.map(\.lastPathComponent).joined(separator: "、") }
         if let plainText { return String(plainText.prefix(240)) }
         return ["image":"图片", "pdf":"PDF 文档", "rich":"富文本", "custom":"自定义格式"][contentKind] ?? contentKind
+    }
+}
+
+public struct HistoryFilePresentation: Codable, Sendable, Equatable {
+    public let name: String
+    public let typeIdentifier: String
+    public let typeLabel: String
+    public init(url: URL) {
+        name = url.lastPathComponent
+        let ext = url.pathExtension.lowercased()
+        typeIdentifier = (url.hasDirectoryPath ? UTType.folder : UTType(filenameExtension: ext) ?? .data).identifier
+        switch ext {
+        case "ppt", "pptx", "pptm", "key": typeLabel = ext == "key" ? "Keynote" : "PowerPoint"
+        case "doc", "docx", "docm": typeLabel = "Word"
+        case "xls", "xlsx", "xlsm": typeLabel = "Excel"
+        case "pdf": typeLabel = "PDF"
+        default: typeLabel = url.hasDirectoryPath ? "文件夹" : ext.isEmpty ? "文件" : ext.uppercased()
+        }
+    }
+}
+
+@MainActor public enum HistoryFileIcons {
+    private static var images: [String: NSImage] = [:]
+    private static var urls: [String: String] = [:]
+    public static func image(for file: HistoryFilePresentation) -> NSImage {
+        if let image = images[file.typeIdentifier] { return image }
+        let image = NSWorkspace.shared.icon(for: UTType(file.typeIdentifier) ?? .data).copy() as! NSImage
+        image.size = NSSize(width: 24, height: 24)
+        if images.count >= 128 { images.removeAll(); urls.removeAll() }
+        images[file.typeIdentifier] = image
+        return image
+    }
+    public static func dataURL(for file: HistoryFilePresentation) -> String {
+        if let url = urls[file.typeIdentifier] { return url }
+        let source = image(for: file)
+        let image = NSImage(size: NSSize(width: 32, height: 32), flipped: false) { rect in source.draw(in: rect); return true }
+        guard let tiff = image.tiffRepresentation, let bitmap = NSBitmapImageRep(data: tiff),
+              let png = bitmap.representation(using: .png, properties: [:]) else { return "" }
+        let url = "data:image/png;base64," + png.base64EncodedString()
+        urls[file.typeIdentifier] = url
+        return url
     }
 }
