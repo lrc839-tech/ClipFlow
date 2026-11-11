@@ -40,6 +40,15 @@ public final class PasteboardLease {
         onChange?(count)
         return true
     }
+
+    /// Menu selection keeps its replacement for the user's next Command+V.
+    /// A newer external copy keeps ownership without another write.
+    @discardableResult
+    public func keepReplacementIfOwned() -> Bool {
+        let owned = stillOwnsClipboard
+        ownedCount = nil
+        return owned
+    }
 }
 
 public enum PasteboardLeaseError: LocalizedError {

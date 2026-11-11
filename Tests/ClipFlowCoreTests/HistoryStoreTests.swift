@@ -41,7 +41,7 @@ struct HistoryStoreTests {
         #expect(try await store.load().map { $0.snapshot.plainText } == ["C", "B", "A"])
         _ = try await store.load(limit: 1).first?.snapshot
         #expect(try await store.load().map { $0.snapshot.plainText } == ["C", "B", "A"])
-        #expect(try sql(dir, "PRAGMA user_version") == "2")
+        #expect(try sql(dir, "PRAGMA user_version") == "4")
         #expect(try sql(dir, "PRAGMA journal_mode") == "wal")
     }
 

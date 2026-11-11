@@ -15,30 +15,48 @@ struct ExtendedHistoryTests {
         defer { sqlite3_close(db) }
         #expect(sqlite3_exec(db,text,nil,nil,nil) == SQLITE_OK)
     }
-    @Test func pinsPersistAndStayAheadOfNewCopiesWithoutChangingIdentity() async throws {
+    @Test func movingToFrontUsesOrdinaryOrderAndNewCopiesPushItDown() async throws {
         let dir = try directory(); defer { try? FileManager.default.removeItem(at:dir) }
         let store = try HistoryStore(directory:dir)
         let a = try await store.record(snapshot:.text("A"))
         let b = try await store.record(snapshot:.text("B"))
-        try await store.setPinned(id:a.id,pinned:true)
+        let originalDate = try await store.load(id:a.id).first?.copiedAt
+        try await store.moveToFront(id:a.id)
+        #expect(try await store.load().map(\.id) == [a.id,b.id])
         let c = try await store.record(snapshot:.text("C"))
-        #expect(try await store.load().map(\.id) == [a.id,c.id,b.id])
+        #expect(try await store.load().map(\.id) == [c.id,a.id,b.id])
         _ = try await store.record(snapshot:.text("B"))
-        #expect(try await store.load().map(\.id) == [a.id,b.id,c.id])
-        try await store.setPinned(id:c.id,pinned:true)
-        #expect(try await store.load(limit:2).map(\.id) == [c.id,a.id])
+        #expect(try await store.load().map(\.id) == [b.id,c.id,a.id])
+        try await store.moveToFront(id:c.id)
+        #expect(try await store.load(limit:2).map(\.id) == [c.id,b.id])
         let reopened = try HistoryStore(directory:dir)
-        #expect(try await reopened.pinnedIDs() == Set([a.id,c.id]))
-        #expect(try await reopened.load().map(\.id) == [c.id,a.id,b.id])
-        try await reopened.setPinned(id:a.id,pinned:false)
         #expect(try await reopened.load().map(\.id) == [c.id,b.id,a.id])
+        #expect(try await reopened.pinnedIDs().isEmpty)
+        #expect(try await reopened.load(id:a.id).first?.copiedAt == originalDate)
+        #expect(try await reopened.load(id:a.id).first?.fingerprint == a.fingerprint)
+        #expect(try await reopened.stats().recordCount == 3)
+    }
+    @Test func versionTwoPinsMigrateInDisplayedOrderThenYieldToNewCopies() async throws {
+        let dir = try directory(); defer { try? FileManager.default.removeItem(at:dir) }
+        let store = try HistoryStore(directory:dir)
+        let a = try await store.record(snapshot:.text("A"))
+        let b = try await store.record(snapshot:.text("B"))
+        let c = try await store.record(snapshot:.text("C"))
+        let originalDate = try await store.load(id:a.id).first?.copiedAt
+        try sql(dir,"UPDATE history SET pinned_rank=2 WHERE id='\(a.id.uuidString)'; UPDATE history SET pinned_rank=1 WHERE id='\(b.id.uuidString)'; DROP TABLE prepared_history; PRAGMA user_version=2")
+        let migrated = try HistoryStore(directory:dir)
+        #expect(try await migrated.load().map(\.id) == [a.id,b.id,c.id])
+        #expect(try await migrated.pinnedIDs().isEmpty)
+        let d = try await migrated.record(snapshot:.text("D"))
+        #expect(try await migrated.load().map(\.id) == [d.id,a.id,b.id,c.id])
+        #expect(try await migrated.load(id:a.id).first?.copiedAt == originalDate)
     }
     @Test func versionOneMigratesAndSummarySearchFindsOlderRecords() async throws {
         let dir = try directory(); defer { try? FileManager.default.removeItem(at:dir) }
         let store = try HistoryStore(directory:dir)
         let old = try await store.record(snapshot:.text("older searchable 中文"))
         for index in 0..<20 { _ = try await store.record(snapshot:.text("entry \(index)")) }
-        try sql(dir,"ALTER TABLE history DROP COLUMN pinned_rank; PRAGMA user_version=1")
+        try sql(dir,"DROP TABLE prepared_history; ALTER TABLE history DROP COLUMN pinned_rank; PRAGMA user_version=1")
         let migrated = try HistoryStore(directory:dir)
         #expect(try await migrated.load().count == 21)
         #expect(try await migrated.summaries(query:"searchable").map(\.id) == [old.id])

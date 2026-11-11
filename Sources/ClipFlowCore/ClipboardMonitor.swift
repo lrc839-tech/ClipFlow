@@ -106,6 +106,7 @@ public final class ClipboardMonitor {
 
         do {
             let snapshot = try PasteboardSnapshot.capture(from: pasteboard, maxBytes: maxBytes)
+                .materializingImageFiles(maxBytes: maxBytes)
             guard !snapshot.items.isEmpty else { return }
             onCapture(snapshot, source)
         } catch let error as PasteboardSnapshotError {

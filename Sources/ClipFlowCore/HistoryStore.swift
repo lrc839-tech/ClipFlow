@@ -3,6 +3,12 @@ import CryptoKit
 import CSQLite
 import Darwin
 
+public struct CompletedRichTextImages: Sendable {
+    public let snapshot: PasteboardSnapshot
+    public let imageCount: Int
+    public init(snapshot: PasteboardSnapshot, imageCount: Int) { self.snapshot = snapshot; self.imageCount = imageCount }
+}
+
 public struct HistoryRecord: Identifiable, Codable, Sendable {
     public let id: UUID
     public let fingerprint: String
@@ -181,7 +187,7 @@ private struct HistoryManifest: Codable {
 /// delete/clear remove records, but intentionally retain blob files in M1. This is
 /// logical deletion, not secure erasure; the UI must disclose that distinction.
 public actor HistoryStore {
-    private static let schemaVersion = 2
+    private static let schemaVersion = 4
     private static let applicationID: Int64 = 0x43464C57
     private static let maximumSnapshotBytes = 64 * 1024 * 1024
     private let directory: URL
@@ -214,7 +220,7 @@ public actor HistoryStore {
                 throw HistoryStoreError.incompatibleDatabase
             }
         } else {
-            guard version == 1 || version == Self.schemaVersion else { throw HistoryStoreError.unsupportedSchema(version) }
+            guard (1...Self.schemaVersion).contains(version) else { throw HistoryStoreError.unsupportedSchema(version) }
             guard application == Self.applicationID else { throw HistoryStoreError.incompatibleDatabase }
         }
         // Validate ownership/version before changing the existing database's journal mode.
@@ -238,6 +244,33 @@ public actor HistoryStore {
                 try opened.execute("PRAGMA user_version=2")
             }
         }
+        if version < 3 {
+            try opened.transaction {
+                let pins = try opened.prepare("SELECT id FROM history WHERE pinned_rank>0 ORDER BY pinned_rank ASC,sort_index ASC")
+                var identifiers: [String] = []
+                while try pins.next() { identifiers.append(try pins.text(at: 0)) }
+                var sequence = try opened.scalarInteger("SELECT value FROM store_state WHERE key='sort_sequence'")
+                guard sequence <= Int64.max - Int64(identifiers.count) else { throw HistoryStoreError.sortSequenceExhausted }
+                for id in identifiers {
+                    sequence += 1
+                    let move = try opened.prepare("UPDATE history SET sort_index=? WHERE id=?")
+                    try move.bind(sequence, at: 1)
+                    try move.bind(id, at: 2)
+                    _ = try move.next()
+                }
+                let advance = try opened.prepare("UPDATE store_state SET value=? WHERE key='sort_sequence'")
+                try advance.bind(sequence, at: 1)
+                _ = try advance.next()
+                try opened.execute("UPDATE history SET pinned_rank=0")
+                try opened.execute("PRAGMA user_version=3")
+            }
+        }
+        if version < 4 {
+            try opened.transaction {
+                try opened.execute("CREATE TABLE prepared_history (history_id TEXT PRIMARY KEY NOT NULL REFERENCES history(id) ON DELETE CASCADE,source_fingerprint TEXT NOT NULL,fingerprint TEXT NOT NULL,manifest TEXT NOT NULL,image_count INTEGER NOT NULL CHECK(image_count>0))")
+                try opened.execute("PRAGMA user_version=4")
+            }
+        }
         guard try opened.scalarText("PRAGMA quick_check") == "ok" else { throw HistoryStoreError.corruptIndex }
         do { try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: databaseURL.path) }
         catch { throw HistoryStoreError.fileIO(operation: "设置索引权限") }
@@ -250,7 +283,7 @@ public actor HistoryStore {
         if limit == 0 { return [] }
         var sql = "SELECT id,fingerprint,copied_at,source_bundle_id,manifest FROM history"
         if id != nil { sql += " WHERE id=?" }
-        sql += " ORDER BY pinned_rank DESC,sort_index DESC"
+        sql += " ORDER BY sort_index DESC"
         if let limit { sql += " LIMIT \(limit) OFFSET \(max(0,offset))" }
         let query = try database.prepare(sql)
         if let id { try query.bind(id.uuidString, at: 1) }
@@ -327,7 +360,7 @@ public actor HistoryStore {
     }
 
     public func summaries(query: String = "", kind: String = "", offset: Int = 0, limit: Int = 50) throws -> [HistorySummary] {
-        let rows = try database.prepare("SELECT id,copied_at,manifest,pinned_rank FROM history ORDER BY pinned_rank DESC,sort_index DESC")
+        let rows = try database.prepare("SELECT id,copied_at,manifest,COALESCE((SELECT image_count FROM prepared_history WHERE history_id=history.id AND source_fingerprint=history.fingerprint),0) FROM history ORDER BY sort_index DESC")
         var result: [HistorySummary] = []
         var skipped = 0
         while try rows.next() {
@@ -354,22 +387,71 @@ public actor HistoryStore {
                 smallItems.append(.init(representations: representations))
             }
             let partial = PasteboardSnapshot(items: smallItems)
-            let preview = category == "file" ? partial.fileURLs.map(\.lastPathComponent).joined(separator: "、") : (partial.plainText ?? ["image":"图片", "pdf":"PDF 文档", "rich":"富文本", "custom":"自定义格式"][category] ?? category)
-            if !query.isEmpty && !preview.localizedCaseInsensitiveContains(query) && !types.joined(separator: " ").localizedCaseInsensitiveContains(query) { continue }
+            let preview = category == "image" ? "图片" : category == "file" ? partial.fileURLs.map(\.lastPathComponent).joined(separator: "、") : (partial.plainText ?? ["pdf":"PDF 文档", "rich":"富文本", "custom":"自定义格式"][category] ?? category)
+            if !query.isEmpty && !preview.localizedCaseInsensitiveContains(query) && !(partial.plainText ?? "").localizedCaseInsensitiveContains(query) && !types.joined(separator: " ").localizedCaseInsensitiveContains(query) { continue }
             if skipped < max(0,offset) { skipped += 1; continue }
-            result.append(HistorySummary(id: id, preview: String(preview.prefix(500)), kind: category, pinned: try rows.integer(at: 3) > 0, copiedAt: try rows.number(at: 1), types: types))
+            result.append(HistorySummary(id: id, preview: String(preview.prefix(500)), kind: category, pinned: false, copiedAt: try rows.number(at: 1), types: types, readyImageCount: Int(try rows.integer(at: 3))))
             if result.count >= min(100,max(1,limit)) { break }
         }
         return result
     }
 
+    /// Derived image bytes are separate from the source fingerprint and copy order.
+    /// A late download never resurrects a deleted record or moves newer copies down.
+    @discardableResult
+    public func savePreparedSnapshot(id: UUID, sourceFingerprint: String,
+                                     result: CompletedRichTextImages) throws -> Bool {
+        guard (1...12).contains(result.imageCount) else { throw HistoryStoreError.invalidSnapshot }
+        let manifest = try makeManifest(result.snapshot)
+        let encoded = try JSONEncoder().encode(manifest)
+        return try database.transaction {
+            let source = try database.prepare("SELECT fingerprint FROM history WHERE id=?")
+            try source.bind(id.uuidString, at: 1)
+            guard try source.next(), try source.text(at: 0) == sourceFingerprint else { return false }
+            for item in result.snapshot.items {
+                for bytes in item.representations.values { try persistBlob(bytes) }
+            }
+            let save = try database.prepare("INSERT INTO prepared_history(history_id,source_fingerprint,fingerprint,manifest,image_count) VALUES(?,?,?,?,?) ON CONFLICT(history_id) DO UPDATE SET source_fingerprint=excluded.source_fingerprint,fingerprint=excluded.fingerprint,manifest=excluded.manifest,image_count=excluded.image_count")
+            try save.bind(id.uuidString, at: 1)
+            try save.bind(sourceFingerprint, at: 2)
+            try save.bind(result.snapshot.fingerprint, at: 3)
+            try save.bind(String(decoding: encoded, as: UTF8.self), at: 4)
+            try save.bind(Int64(result.imageCount), at: 5)
+            _ = try save.next()
+            return true
+        }
+    }
+
+    public func preparedSnapshot(id: UUID) throws -> PasteboardSnapshot? {
+        let query = try database.prepare("SELECT prepared_history.fingerprint,prepared_history.manifest FROM prepared_history JOIN history ON history.id=history_id AND history.fingerprint=source_fingerprint WHERE history_id=?")
+        try query.bind(id.uuidString, at: 1)
+        guard try query.next() else { return nil }
+        let fingerprint = try query.text(at: 0)
+        guard let manifest = try? JSONDecoder().decode(HistoryManifest.self, from: Data(try query.text(at: 1).utf8)) else { throw HistoryStoreError.corruptIndex }
+        let snapshot = try materialize(manifest)
+        guard snapshot.fingerprint == fingerprint else { throw HistoryStoreError.corruptIndex }
+        return snapshot
+    }
+
     public func setPinned(id: UUID, pinned: Bool) throws {
+        if pinned { try moveToFront(id: id) }
+    }
+
+    public func moveToFront(id: UUID) throws {
         try database.transaction {
-            let rank = pinned ? try database.scalarInteger("SELECT COALESCE(MAX(pinned_rank),0)+1 FROM history") : 0
-            let statement = try database.prepare("UPDATE history SET pinned_rank=? WHERE id=?")
-            try statement.bind(rank, at: 1)
+            let existing = try database.prepare("SELECT id FROM history WHERE id=?")
+            try existing.bind(id.uuidString, at: 1)
+            guard try existing.next() else { return }
+            let previous = try database.scalarInteger("SELECT value FROM store_state WHERE key='sort_sequence'")
+            guard previous < Int64.max else { throw HistoryStoreError.sortSequenceExhausted }
+            let sequence = previous + 1
+            let statement = try database.prepare("UPDATE history SET sort_index=?,pinned_rank=0 WHERE id=?")
+            try statement.bind(sequence, at: 1)
             try statement.bind(id.uuidString, at: 2)
             _ = try statement.next()
+            let advance = try database.prepare("UPDATE store_state SET value=? WHERE key='sort_sequence'")
+            try advance.bind(sequence, at: 1)
+            _ = try advance.next()
         }
     }
 
@@ -512,4 +594,5 @@ public struct HistorySummary: Codable, Sendable {
     public let pinned: Bool
     public let copiedAt: Double
     public let types: [String]
+    public let readyImageCount: Int
 }

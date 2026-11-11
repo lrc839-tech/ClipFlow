@@ -9,7 +9,7 @@ public enum TextPasteError: LocalizedError {
         case .cancelled: return "快捷键接管设置或前台应用已变化，此任务已取消。"
         case .permission: return "尚无跨应用输入权限。请授权当前 ClipFlow App 后退出重开；热键注册成功不等于能够粘贴。"
         case .focusChanged: return "前台应用已改变，本条粘贴取消以免输入到其他应用。"
-        case .unsupported: return "M1 只粘贴单项目的文本内容；图片、文件及多格式保真粘贴尚未验收。"
+        case .unsupported: return "所选历史记录不可用，请刷新设置中的历史列表后重试。"
         case .secureInput: return "系统安全输入已启用，已停止模拟输入。请离开密码等安全输入区域。"
         case .clipboardChanged: return "发送前检测到新复制，未发送临时内容且保留新剪贴板。"
         case .eventCreation: return "系统无法创建输入事件，未确认粘贴。"
@@ -42,16 +42,19 @@ public final class TextPasteService {
     }
 
     public func paste(snapshot: PasteboardSnapshot, targetPID: pid_t, clipboardMode: Bool,
-                      waitMilliseconds: Int = 150, shouldContinue: () -> Bool = { true }, onBoardChange: @escaping (Int) -> Void) async throws -> TextPasteOutcome {
+                      waitMilliseconds: Int = 150, keepOnClipboard: Bool = false,
+                      expectedClipboardChangeCount: Int? = nil,
+                      shouldContinue: () -> Bool = { true }, onBoardChange: @escaping (Int) -> Void) async throws -> TextPasteOutcome {
         guard shouldContinue() else { throw TextPasteError.cancelled }
         guard AXIsProcessTrusted(), CGPreflightPostEventAccess() else { throw TextPasteError.permission }
         guard !IsSecureEventInputEnabled() else { throw TextPasteError.secureInput }
         try checkFocus(targetPID)
+        let snapshot = try snapshot.materializingImageFiles().forSystemPaste
         try snapshot.validateFileReferences()
         let text = snapshot.plainText
         let preserveFormats = snapshot.requiresSystemPaste
 
-        if !clipboardMode, !preserveFormats, let text, let chunks = Self.unicodeChunks(text) {
+        if !keepOnClipboard, !clipboardMode, !preserveFormats, let text, let chunks = Self.unicodeChunks(text) {
             for units in chunks {
                 guard shouldContinue() else { throw TextPasteError.cancelled }
                 try checkFocus(targetPID)
@@ -63,6 +66,7 @@ public final class TextPasteService {
         }
 
         let board = NSPasteboard.general
+        if let expectedClipboardChangeCount, board.changeCount != expectedClipboardChangeCount { throw TextPasteError.clipboardChanged }
         let lease = try PasteboardLease(board: board, replacement: snapshot.forSystemPaste, onChange: onBoardChange)
         var restored = false
         do {
@@ -82,6 +86,10 @@ public final class TextPasteService {
             // Restore errors must remain observable rather than being silently swallowed.
             _ = try lease.restoreIfOwned()
             throw error
+        }
+        if keepOnClipboard {
+            let kept = lease.keepReplacementIfOwned()
+            return TextPasteOutcome(path: "clipboard-retained; receipt unconfirmed", restoreSkipped: !kept)
         }
         restored = try lease.restoreIfOwned()
         return TextPasteOutcome(path: "clipboard; heuristic wait, receipt unconfirmed", restoreSkipped: !restored)
