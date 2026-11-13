@@ -6,9 +6,11 @@
 
 ## 普通用户安装（无需编译）
 
-0.6.2源码已更新，本轮安装包仅在本机交付，尚未发布对应GitHub Release；下载页中的旧安装包功能以其版本说明为准。
+**[下载 ClipFlow 0.6.2 安装包（Apple Silicon）](https://github.com/lrc839-tech/ClipFlow/releases/download/v0.6.2/ClipFlow-0.6.2-macOS-arm64.dmg)** · [版本说明](https://github.com/lrc839-tech/ClipFlow/releases/tag/v0.6.2) · [SHA-256 校验文件](https://github.com/lrc839-tech/ClipFlow/releases/download/v0.6.2/SHA256SUMS.txt)
 
-1. 打开 [GitHub Releases 下载页](https://github.com/lrc839-tech/ClipFlow/releases)，在 **Assets** 下载 **ClipFlow-版本号-macOS-arm64.dmg**。Source code 压缩包是源码，不是安装包。
+0.6.2开发预览安装包已发布，包含文件粘贴修复与图片历史预览。公开下载后的SHA-256已与本机固定构建核对一致；GitHub的Source code压缩包不是安装包。
+
+1. 打开 [0.6.2 GitHub Release](https://github.com/lrc839-tech/ClipFlow/releases/tag/v0.6.2)，在 **Assets** 下载 **ClipFlow-0.6.2-macOS-arm64.dmg**，也可以直接点击上方安装包链接。Source code 压缩包是源码，不是安装包。
 2. 双击 DMG，把 `ClipFlow.app` 拖到窗口里的 `Applications`（应用程序）文件夹；从 Mac 的应用程序文件夹打开，不要在 DMG 里直接运行。DMG 里同时附有“安装与首次打开说明”HTML和文本文件。
 3. **首次打开如果被系统拦截**：先尝试打开一次，关闭拦截提示；打开“系统设置 → 隐私与安全性”，在安全性区域找到 ClipFlow，点击“仍要打开 / Open Anyway”，按要求本人验证身份，再在确认框点击“打开”。不需要反复双击固定次数；若提示未出现，可重新尝试打开一次后返回设置。此流程参考 [Apple 官方说明](https://support.apple.com/zh-cn/102445)。
 4. **单独授权输入权限**：到“隐私与安全性 → 辅助功能”（部分系统称“设备控制和数据访问”），添加并启用刚安装的 ClipFlow。退出重开，或点“重试注册”，确认“输入权限已就绪”和“Command接管中：12/12”。“仍要打开”不等于已获得辅助功能权限。
