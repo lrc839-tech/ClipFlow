@@ -1,0 +1,53 @@
+name: Publish verified ClipFlow 0.6.2 installer
+on:
+  push:
+    branches: [release-assets/v0.6.2]
+permissions: {}
+concurrency:
+  group: clipflow-release-0.6.2
+  cancel-in-progress: false
+jobs:
+  publish:
+    if: github.repository == 'lrc839-tech/ClipFlow'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Verify installer and publish prepared release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: lrc839-tech/ClipFlow
+          TAG: v0.6.2
+          SOURCE_SHA: ee32a3c1f7a41f692bb3a14517eeed6cafcf9a70
+          DMG_BLOB: 3407e57c408d72bf0a96e591773573009612ab7f
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          cd release
+          gh api "repos/$REPO/git/blobs/$DMG_BLOB" > blob.json
+          python3 - <<'PYCODE'
+          import json,base64,hashlib
+          from pathlib import Path
+          blob=json.loads(Path('blob.json').read_text())
+          assert blob['encoding']=='base64'
+          data=base64.b64decode(blob['content'])
+          assert len(data)==666463
+          assert hashlib.sha256(data).hexdigest()=='00093631f4a422435892dd500c71ab85aa40a779614d3d7b6cab10be0e3f7221'
+          Path('ClipFlow-0.6.2-macOS-arm64.dmg').write_bytes(data)
+          PYCODE
+          printf '%s  %s\n' '00093631f4a422435892dd500c71ab85aa40a779614d3d7b6cab10be0e3f7221' 'ClipFlow-0.6.2-macOS-arm64.dmg' > SHA256SUMS.txt
+          sha256sum --check SHA256SUMS.txt
+          gh api "repos/$REPO/contents/release/release-notes.md?ref=$GITHUB_SHA" --jq '.content' | base64 --decode > release-notes.md
+          gh release view "$TAG" --repo "$REPO" --json tagName,isDraft,assets > existing.json
+          python3 - <<'PYCODE'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('existing.json').read_text())
+          assert r['tagName']=='v0.6.2' and r['isDraft'], 'Expected the prepared v0.6.2 draft'
+          assert not r['assets'], 'Stop rather than replace existing release assets'
+          PYCODE
+          gh release upload "$TAG" ClipFlow-0.6.2-macOS-arm64.dmg SHA256SUMS.txt --repo "$REPO"
+          gh release edit "$TAG" --repo "$REPO" --title 'ClipFlow 0.6.2 · 文件粘贴修复（开发预览）' --notes-file release-notes.md --target "$SOURCE_SHA" --prerelease --draft=false --latest=false
+          gh release view "$TAG" --repo "$REPO" --json tagName,isDraft,isPrerelease,url,assets
