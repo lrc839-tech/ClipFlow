@@ -64,7 +64,10 @@ struct ImageFilePasteTests {
         let text = PasteboardSnapshot.text("IMG_6480.JPG")
         #expect(try text.materializingImageFiles().forSystemPaste == text)
         let regular = fileSnapshot(URL(fileURLWithPath: "/tmp/ClipFlow-file.txt"))
-        #expect(try regular.materializingImageFiles().forSystemPaste == regular)
+        let outgoing = try regular.materializingImageFiles().forSystemPaste
+        #expect(outgoing.fileURLs == regular.fileURLs)
+        #expect(outgoing.contentKind == "file")
+        #expect(outgoing.plainText == nil)
     }
     @Test func missingImageFileDoesNotFallBackToItsFilename() throws {
         let missing = fileSnapshot(URL(fileURLWithPath: "/tmp/\(UUID().uuidString)/IMG_6480.JPG"))

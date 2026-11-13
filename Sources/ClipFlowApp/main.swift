@@ -441,7 +441,7 @@ final class ClipFlowDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func writeReport() {
         let logs = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/ClipFlow")
-        var report: [String: Any] = ["stage": "v0.6.1-file-presentation", "appVersion": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "",
+        var report: [String: Any] = ["stage": "v0.6.2-file-paste", "appVersion": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "",
             "ready": ready, "paused": monitor?.paused ?? true,
             "accessibilityTrusted": AXIsProcessTrusted(), "postEventAllowed": CGPreflightPostEventAccess(),
             "autoCompleteDingTalkImages": autoCompleteImages, "pendingImageCount": pendingImageIDs.count, "menuImagePreviewCount": statusItem.menu?.items.filter { entry in

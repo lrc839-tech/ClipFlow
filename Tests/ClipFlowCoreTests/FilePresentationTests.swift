@@ -26,12 +26,59 @@ struct FilePresentationTests {
             let outgoing = snapshot.forSystemPaste
             #expect(outgoing.fileURLs == [url])
             #expect(outgoing.items[0].representations[type] == nil)
+            #expect(outgoing.plainText == nil)
             #expect(outgoing.requiresSystemPaste)
             try outgoing.validateFileReferences()
             let board = NSPasteboard.withUniqueName(); defer { board.releaseGlobally() }
             try outgoing.write(to: board)
             #expect((board.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly:true]) as? [URL]) == [url])
         }
+    }
+    @Test func filePasteCannotOfferFilenameTextToATextFirstReceiver() throws {
+        let dir = directory(); defer { try? FileManager.default.removeItem(at: dir) }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent("report.docx")
+        try Data("synthetic document".utf8).write(to: url)
+        var raw = document(url, icon: try fixtureIcon())
+        raw.items[0].representations["public.utf16-external-plain-text"] = url.lastPathComponent.data(using: .utf16)
+        let board = NSPasteboard.withUniqueName(); defer { board.releaseGlobally() }
+        try raw.write(to: board)
+        // Reproduce the old failure: a text-first receiver chooses the filename.
+        #expect(board.string(forType: .string) == "report.docx")
+        let outgoing = raw.forSystemPaste
+        try outgoing.write(to: board)
+        #expect(board.availableType(from: [.string, .init("public.utf16-external-plain-text"), .fileURL]) == .fileURL)
+        #expect(board.string(forType: .string) == nil)
+        #expect(outgoing.forSystemPaste == outgoing)
+        let native = NSPasteboard.withUniqueName(); defer { native.releaseGlobally() }
+        native.clearContents()
+        #expect(native.writeObjects([url as NSURL]))
+        #expect(Set(board.pasteboardItems?.first?.types ?? []) == Set(native.pasteboardItems?.first?.types ?? []))
+        #expect((board.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly:true]) as? [URL]) == [url])
+        #expect(raw.items[0].representations["public.utf8-plain-text"] != nil)
+    }
+    @Test func legacyFilesBecomeSeparateModernItemsAndKeepOrderAfterPersistence() async throws {
+        let dir = directory(); defer { try? FileManager.default.removeItem(at: dir) }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let urls = ["文件 one.pptx", "two.docx", "folder"].map { dir.appendingPathComponent($0) }
+        try Data("one".utf8).write(to: urls[0]); try Data("two".utf8).write(to: urls[1])
+        try FileManager.default.createDirectory(at: urls[2], withIntermediateDirectories: true)
+        let list = try PropertyListSerialization.data(fromPropertyList: urls.map(\.path), format: .binary, options: 0)
+        let raw = PasteboardSnapshot(items: [.init(representations: ["NSFilenamesPboardType":list,
+            "public.utf8-plain-text":Data("filename fallback".utf8),"public.html":Data("filename fallback".utf8)])])
+        let store = try HistoryStore(directory: dir.appendingPathComponent("history"))
+        let record = try await store.record(snapshot: raw)
+        let loaded = try #require(try await store.load(id: record.id).first).snapshot
+        #expect(loaded == raw)
+        let outgoing = loaded.forSystemPaste
+        try outgoing.validateFileReferences()
+        #expect(outgoing.items.count == 3)
+        #expect(outgoing.fileURLs.map(\.path) == urls.map(\.path))
+        #expect(outgoing.items.allSatisfy { Set($0.representations.keys) == ["public.file-url"] })
+        let board = NSPasteboard.withUniqueName(); defer { board.releaseGlobally() }
+        try outgoing.write(to: board)
+        #expect((board.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly:true]) as? [URL])?.map(\.path) == urls.map(\.path))
+        #expect(board.string(forType: .string) == nil)
     }
     @Test func existingIconBearingFilesHaveNamesTypesAndNoPicturePreviewWithoutRewritingHistory() async throws {
         let dir = directory(); defer { try? FileManager.default.removeItem(at: dir) }
@@ -94,5 +141,19 @@ struct FilePresentationTests {
             let png = try #require(Data(base64Encoded: String(url.dropFirst("data:image/png;base64,".count))))
             #expect(NSImage(data: png) != nil)
         }
+    }
+    @Test func aBrokenFileReferenceCannotBecomeFilenameTextOrAPartialFilePaste() throws {
+        let dir = directory(); defer { try? FileManager.default.removeItem(at: dir) }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent("keep.txt"); try Data("fixture".utf8).write(to: url)
+        let valid = document(url, icon: try fixtureIcon())
+        let invalid = PasteboardItemSnapshot(representations: ["public.file-url":Data("https://example.invalid/not-a-file".utf8),
+            "public.utf8-plain-text":Data("missing.docx".utf8)])
+        let mixed = PasteboardSnapshot(items: valid.items + [invalid])
+        #expect(mixed.forSystemPaste.items.count == 2)
+        #expect(throws: FileReferenceError.self) { try mixed.forSystemPaste.validateFileReferences() }
+        try FileManager.default.removeItem(at: url)
+        #expect(valid.forSystemPaste.plainText == nil)
+        #expect(throws: FileReferenceError.self) { try valid.forSystemPaste.validateFileReferences() }
     }
 }

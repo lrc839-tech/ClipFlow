@@ -26,9 +26,14 @@ public extension PasteboardSnapshot {
     var requiresSystemPaste: Bool { contentKind != "text" || items.count != 1 }
     var forSystemPaste: PasteboardSnapshot {
         if contentKind == "file" {
-            return Self(items: items.map { item in
-                guard item.representations["public.file-url"] != nil || item.representations["NSFilenamesPboardType"] != nil else { return item }
-                return .init(representations: item.representations.filter { UTType($0.key)?.conforms(to: .image) != true })
+            let urls = fileURLs
+            // Publish one real file URL per item, as NSURL's pasteboard writer does.
+            // Finder also supplies filename strings and icons; text-first receivers
+            // otherwise select those instead of accepting the file attachment.
+            // Normalize legacy filename arrays here, without changing stored history.
+            guard hasCompleteFileReferences else { return self } // validation rejects malformed references
+            return Self(items: urls.map { url in
+                .init(representations: [NSPasteboard.PasteboardType.fileURL.rawValue: Data(url.absoluteString.utf8)])
             })
         }
         if contentKind == "image", !items.isEmpty, items.allSatisfy({ item in item.representations.keys.contains(where: Self.isImageType) }) {
@@ -117,9 +122,12 @@ public extension PasteboardSnapshot {
     private static func isImageType(_ type: String) -> Bool {
         type != "com.apple.icns" && type != "com.microsoft.ico" && UTType(type)?.conforms(to: .image) == true
     }
+    private var hasCompleteFileReferences: Bool {
+        !items.isEmpty && items.allSatisfy { !Self(items: [$0]).fileURLs.isEmpty }
+    }
     func validateFileReferences() throws {
         if contentKind == "file" || (!fileURLs.isEmpty && !items.allSatisfy({ $0.representations.keys.contains(where: Self.isImageType) })) {
-            guard !fileURLs.isEmpty, fileURLs.allSatisfy({ FileManager.default.isReadableFile(atPath: $0.path) }) else { throw FileReferenceError.unavailable }
+            guard hasCompleteFileReferences, fileURLs.allSatisfy({ FileManager.default.isReadableFile(atPath: $0.path) }) else { throw FileReferenceError.unavailable }
         }
     }
     var summary: String {
