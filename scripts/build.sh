@@ -10,7 +10,7 @@ if [[ "$stage" == m0 ]]; then
 elif [[ "$stage" == m1 ]]; then
   products=(ClipFlowApp)
   local_apps="${CLIPFLOW_INSTALL_DIR:-$HOME/Applications}"
-  archive="dist/ClipFlow-0.6.2.zip"
+  archive="dist/mac复制工具-0.7.0.zip"
 else
   echo "Usage: $0 [m0|m1]" >&2
   exit 2
@@ -19,7 +19,7 @@ swift build --scratch-path "$build_cache" -c release
 binary_directory=$(swift build --scratch-path "$build_cache" -c release --show-bin-path)
 for product in $products; do
   app_name="$product"
-  [[ "$product" == ClipFlowApp ]] && app_name=ClipFlow
+  [[ "$product" == ClipFlowApp ]] && app_name="mac复制工具"
   bundle="$build_cache/Bundles/$stage/${app_name}.app"
   mkdir -p "$bundle/Contents/MacOS"
   cp "$binary_directory/$product" "$bundle/Contents/MacOS/$product"
@@ -34,10 +34,10 @@ for product in $products; do
     agent=false
     version="0.0.1"
   else
-    display="ClipFlow"
+    display="mac复制工具"
     identifier="local.lrc.clipflow"
     agent=true
-    version="0.6.2"
+    version="0.7.0"
   fi
   cat > "$bundle/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -66,5 +66,9 @@ PLIST
   ditto --norsrc --noextattr "$bundle" "$local_apps/${app_name}.app"
   codesign --verify --strict "$local_apps/${app_name}.app"
 done
-ditto -c -k --keepParent --norsrc "$build_cache/Bundles/$stage" "$archive"
+if [[ "$stage" == m1 ]]; then
+  ditto -c -k --keepParent --norsrc "$local_apps/mac复制工具.app" "$archive"
+else
+  ditto -c -k --keepParent --norsrc "$build_cache/Bundles/$stage" "$archive"
+fi
 echo "$stage apps: $local_apps (local ad-hoc signature; not notarized). ZIP: $PWD/$archive"

@@ -1,19 +1,19 @@
-# ClipFlow 安装与首次使用
+# mac复制工具 安装与首次使用（原ClipFlow）
 
 ## 1. 下载安装包
 
-普通用户不需要安装 Xcode、Swift 或使用终端编译。
+普通用户不需要安装 Xcode、Swift 或使用终端编译。0.7.0应用名称为“mac复制工具”；GitHub旧版0.6.2安装包内名称仍为ClipFlow，请按对应版本实际名称安装。
 
 1. 打开 https://github.com/lrc839-tech/ClipFlow/releases 。
 2. 在 Assets 中下载 `ClipFlow-版本号-macOS-arm64.dmg`，不要把自动生成的 Source code 压缩包当成安装包。
-3. 双击 DMG，在打开的磁盘窗口中把 `ClipFlow.app` 拖到 `Applications`（应用程序）文件夹。
+3. 双击 DMG，在打开的磁盘窗口中把 `mac复制工具.app` 拖到 `Applications`（应用程序）文件夹。
 4. 从 Mac 的“应用程序”文件夹打开 ClipFlow，不要直接从 DMG 中运行。安装后可以推出该磁盘映像。
 
 本安装包仅适用于 Apple Silicon Mac（M 系列芯片），不是 Intel 或 Windows 安装包。当前仅在 macOS 27.0.1 / Apple Silicon 验证；程序声明最低 macOS 14，其他系统版本尚未完成验收。
 
 ## 2. 首次打开：未公证应用的系统提示
 
-当前是0.6.2开发预览版，使用临时签名，尚未经过 Apple Developer ID 签名和公证。请确认安装包来自上面的项目 Releases，并阅读版本说明。
+当前源码构建是0.7.0开发预览版（本机修复验收中；GitHub公开安装包目前仍为0.6.2），使用临时签名，尚未经过 Apple Developer ID 签名和公证。请确认安装包来自上面的项目 Releases，并阅读版本说明。
 
 如果系统提示“无法验证开发者”或“Apple 无法检查是否包含恶意软件”：
 
@@ -31,7 +31,7 @@ Apple 官方说明：https://support.apple.com/zh-cn/102445 。如果提示“�
 ## 3. 允许跨应用粘贴
 
 1. 点击CF菜单的授权状态行（末尾“打开授权”），或打开“系统设置 → 隐私与安全性 → 辅助功能”；部分系统显示“设备控制和数据访问”。
-2. 点击“+”，添加安装到“应用程序”文件夹的 `ClipFlow.app`，并启用开关。不要添加 DMG 内的副本。
+2. 点击“+”，添加安装到“应用程序”文件夹的 `mac复制工具.app`，并启用开关。不要添加 DMG 内的副本。
 3. 退出 ClipFlow 再重新打开，或点击历史页顶部“重试注册”。
 4. 确认历史页显示“输入权限已就绪”和“Command接管中：12/12”。
 

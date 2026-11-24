@@ -285,6 +285,18 @@ public actor HistoryStore {
 
     /// nil loads/validates the whole history; production can request just the newest 12.
     /// Any missing/corrupt payload aborts the read and preserves the original database.
+    /// IDs only: selecting slots must not materialize all historical image blobs.
+    public func newestIDs(limit: Int) throws -> [UUID] {
+        guard limit >= 0 else { throw HistoryStoreError.invalidLimit }
+        let query = try database.prepare("SELECT id FROM history ORDER BY sort_index DESC LIMIT \(limit)")
+        var ids: [UUID] = []
+        while try query.next() {
+            guard let id = UUID(uuidString: try query.text(at: 0)) else { throw HistoryStoreError.corruptIndex }
+            ids.append(id)
+        }
+        return ids
+    }
+
     public func load(limit: Int? = nil, id: UUID? = nil, offset: Int = 0) throws -> [HistoryRecord] {
         if let limit, limit < 0 { throw HistoryStoreError.invalidLimit }
         if limit == 0 { return [] }

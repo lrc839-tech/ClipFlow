@@ -1,8 +1,8 @@
-# ClipFlow
+# mac复制工具（原 ClipFlow）
 
 原生 macOS 剪贴板历史工具。默认通过 **Command + `1234567890-=`** 粘贴当前前12条记录；提供 Option 回退、释放全部快捷键和按应用排除。
 
-当前版本为 **0.6.2 开发预览**，尚未完成全部跨应用和连续粘贴验收。仓库包含源码、测试、构建脚本与阶段验证记录。
+当前源码及本机安装为 **0.7.0 开发预览**（新增开机自启、Command+V同步及固定快捷键；新版本实键验收中，公开安装包仍为0.6.2），尚未完成全部跨应用和连续粘贴验收。仓库包含源码、测试、构建脚本与阶段验证记录。
 
 ## 普通用户安装（无需编译）
 
@@ -19,6 +19,10 @@
 安装包仅适用于 **Apple Silicon（M系列）Mac**，不是 Intel 或 Windows 版本。当前采用临时签名，**尚未完成 Developer ID 签名与 Apple 公证**。若提示“将损坏你的电脑”或“已损坏”，请停止安装并重新下载、核对发布页SHA-256，参照安装说明排障；不要把这类提示一律当作普通未公证提示。安装不要求关闭系统安全保护或执行移除隔离属性的命令。
 
 ## 功能
+
+- 0.7.0新增：设置中的“登录 Mac 时自动启动”默认开启，可取消；使用系统登录项注册并展示实际状态。
+- 任意历史可绑定到1～9、0、-、=任意槽位，固定槽不随新复制滚动，其他槽继续滚动；在设置顶部可解除。配置保存在本机，重开保留。
+- 快捷粘贴后同步系统剪贴板，Command+V继续使用所选内容；短纯文本快速输入也同步，期间的新复制优先保留。
 
 - 菜单栏常驻，关闭管理窗口后继续运行。监听系统剪贴板变化，Command+C复制和Command+X剪切均会收录（以来源实际写入剪贴板为准）。
 - SQLite 保存历史索引，独立文件保存原始二进制数据；默认不按时间或数量自动删除。
@@ -51,13 +55,13 @@ cd ClipFlow
 ./scripts/build.sh
 ```
 
-构建脚本会安装到 `~/Applications/ClipFlow.app`，并生成 `dist/ClipFlow-0.6.2.zip`。脚本使用本机缓存目录构建和签名，避免文件提供方目录附加 Finder 元数据导致签名失效。
+构建脚本会安装到 `~/Applications/mac复制工具.app`，并生成 `dist/mac复制工具-0.7.0.zip`。脚本使用本机缓存目录构建和签名，避免文件提供方目录附加 Finder 元数据导致签名失效。
 
 App 使用临时签名，未做 Developer ID 签名或公证。当前实际测试环境为 Apple Silicon、macOS 27.0.1、Swift 6.4 / Command Line Tools。包声明最低 macOS 14，不代表已验证所有系统版本或 Intel Mac。
 
 ### 输入权限
 
-1. 打开安装位置的 ClipFlow：DMG 安装通常为 `/Applications/ClipFlow.app`，源码脚本安装为 `~/Applications/ClipFlow.app`。
+1. 打开实际安装副本：0.7.0为 `/Applications/mac复制工具.app` 或源码脚本的 `~/Applications/mac复制工具.app`；0.6.2旧包名称为ClipFlow。
 2. 到系统设置 → 隐私与安全性 → 辅助功能（部分系统显示“设备控制和数据访问”），添加并启用该实际安装副本。
 3. 退出重开，或点击历史页“重试注册”，确认权限就绪和快捷键注册状态。
 
@@ -102,7 +106,7 @@ Command 模式会占用浏览器切标签、缩放等同组合功能。历史页
 
 ## 验证状态
 
-2026-11-13开发机回归已运行 **83项测试、18个测试套件**。当前验证结果见[0.6.2文件粘贴修复](docs/v0.6.2-file-paste.md)、[0.6.1文件类型修复](docs/v0.6.1-file-presentation.md)、[0.6图片预览](docs/v0.6-image-previews.md)、[0.5剪切与钉钉图片补全](docs/v0.5-dingtalk-images.md)与[0.4修改记录](docs/v0.4-menu-images.md)。测试使用隔离临时数据库和具名系统剪贴板，不读取或修改用户的 general 剪贴板。
+2026-11-24开发机回归已运行 **96项测试、21个测试套件**。[0.7.0新增功能及本机验证](docs/v0.7.0-settings-slots.md)尚待授权后实键验收。当前验证结果见[0.6.2文件粘贴修复](docs/v0.6.2-file-paste.md)、[0.6.1文件类型修复](docs/v0.6.1-file-presentation.md)、[0.6图片预览](docs/v0.6-image-previews.md)、[0.5剪切与钉钉图片补全](docs/v0.5-dingtalk-images.md)与[0.4修改记录](docs/v0.4-menu-images.md)。测试使用隔离临时数据库和具名系统剪贴板，不读取或修改用户的 general 剪贴板。
 
 | 验证项 | 已取得的证据 / 尚存边界 |
 |---|---|
@@ -129,7 +133,7 @@ Command 模式会占用浏览器切标签、缩放等同组合功能。历史页
 制作DMG时可复用已经构建并验签的App，不重新构建或改签名：
 
 ```sh
-python3 scripts/package_dmg.py --app "$HOME/Applications/ClipFlow.app"
+python3 scripts/package_dmg.py --app "$HOME/Applications/mac复制工具.app"
 ```
 
 输出DMG与`SHA256SUMS.txt`到`dist/`；安装说明从`docs/INSTALL.md`同步嵌入。此脚本只打包App、说明和生成的公开元数据，不复制历史、用户配置或日志。

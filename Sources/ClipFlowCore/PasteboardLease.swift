@@ -4,17 +4,17 @@ import AppKit
 /// external clipboard write. There is no public NSPasteboard compare-and-swap primitive.
 public final class PasteboardLease {
     private let board: NSPasteboard
-    private let original: PasteboardSnapshot
+    private let original: PasteboardSnapshot?
     private var ownedCount: Int?
     private let onChange: ((Int) -> Void)?
 
     public var stillOwnsClipboard: Bool { ownedCount.map { board.changeCount == $0 } ?? false }
 
-    public init(board: NSPasteboard, replacement: PasteboardSnapshot, onChange: ((Int) -> Void)? = nil) throws {
+    public init(board: NSPasteboard, replacement: PasteboardSnapshot, preserveOriginal: Bool = true, onChange: ((Int) -> Void)? = nil) throws {
         self.board = board
         self.onChange = onChange
         let before = board.changeCount
-        original = try PasteboardSnapshot.capture(from: board)
+        original = preserveOriginal ? try PasteboardSnapshot.capture(from: board) : nil
         guard board.changeCount == before else { throw PasteboardSnapshotError.changedDuringRead }
         do {
             ownedCount = try replacement.write(to: board, onClaim: { self.ownedCount = $0; onChange?($0) })
@@ -22,7 +22,7 @@ public final class PasteboardLease {
         } catch {
             // Even writeObjects failure may follow a successful clear. Restore only when
             // the last change count is still attributable to this lease.
-            if stillOwnsClipboard {
+            if stillOwnsClipboard, let original {
                 do { let count = try original.write(to: board, onClaim: onChange); onChange?(count) }
                 catch { throw PasteboardLeaseError.writeAndRestoreFailed }
             }
@@ -34,7 +34,7 @@ public final class PasteboardLease {
     /// False means a later copy won; the caller must leave it untouched.
     @discardableResult
     public func restoreIfOwned() throws -> Bool {
-        guard stillOwnsClipboard else { ownedCount = nil; return false }
+        guard stillOwnsClipboard, let original else { ownedCount = nil; return false }
         ownedCount = nil
         let count = try original.write(to: board, onClaim: onChange)
         onChange?(count)

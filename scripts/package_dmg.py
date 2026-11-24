@@ -32,13 +32,13 @@ def main():
     parser.add_argument('--output-dir', type=Path, default=ROOT / 'dist')
     args = parser.parse_args()
     app = args.app.expanduser().resolve()
-    if app.name != 'ClipFlow.app' or not app.is_dir():
-        parser.error('--app must point to an existing ClipFlow.app')
+    if app.name != 'mac复制工具.app' or not app.is_dir():
+        parser.error('--app must point to an existing mac复制工具.app')
     info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
     if info.get('CFBundleIdentifier') != 'local.lrc.clipflow':
         parser.error('unexpected bundle identifier')
     version = info['CFBundleShortVersionString']
-    if version != '0.6.2':
+    if version != '0.7.0':
         parser.error('update the installation guide and release version before packaging')
     binary = app / 'Contents/MacOS' / info['CFBundleExecutable']
     if run('/usr/bin/lipo', '-archs', str(binary)).strip() != 'arm64':
@@ -47,7 +47,7 @@ def main():
     before = digest(binary)
     guide = (ROOT / 'docs/INSTALL.md').read_text()
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    output = args.output_dir.resolve() / f'ClipFlow-{version}-macOS-arm64.dmg'
+    output = args.output_dir.resolve() / f'mac-copy-tool-{version}-macOS-arm64.dmg'
     if output.exists():
         parser.error(f'output already exists: {output}')
     cache = Path.home() / 'Library/Caches/ClipFlowPackaging'
@@ -57,15 +57,15 @@ def main():
         stage.mkdir()
         run('/usr/bin/ditto', '--norsrc', '--noextattr', str(app), str(stage / app.name))
         run('/usr/bin/codesign', '--verify', '--strict', str(stage / app.name))
-        assert digest(stage / 'ClipFlow.app/Contents/MacOS/ClipFlowApp') == before
+        assert digest(stage / 'mac复制工具.app/Contents/MacOS/ClipFlowApp') == before
         (stage / 'Applications').symlink_to('/Applications', target_is_directory=True)
         (stage / '安装与首次打开说明.txt').write_text(guide)
         (stage / '安装与首次打开说明.html').write_text('''<!doctype html>
 <html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'">
-<title>ClipFlow 安装与首次打开说明</title>
+<title>mac复制工具 安装与首次打开说明</title>
 <style>body{max-width:880px;margin:36px auto;padding:0 24px;font:16px/1.8 -apple-system,BlinkMacSystemFont,sans-serif;color:#243047;background:#f6f8fc}header,main{padding:24px 30px;background:white;border:1px solid #dbe3ef;border-radius:14px;margin-bottom:20px}h1{margin:0;font-size:30px}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit}a{color:#2356b8}.lead{color:#53647c}</style>
-<header><h1>ClipFlow · 安装说明</h1><p class="lead">把 ClipFlow.app 拖到 Applications，然后从应用程序文件夹打开。</p>
+<header><h1>mac复制工具 · 安装说明</h1><p class="lead">把 mac复制工具.app 拖到 Applications，然后从应用程序文件夹打开。</p>
 <p>未公证应用：先尝试打开 → 隐私与安全性 → 仍要打开 → 打开。随后单独启用辅助功能权限。</p>
 <a href="https://github.com/lrc839-tech/ClipFlow/blob/main/docs/INSTALL.md">在线安装说明</a> · <a href="https://support.apple.com/zh-cn/102445">Apple 官方说明</a></header>
 <main><pre>''' + html.escape(guide) + '</pre></main></html>\n')
@@ -77,7 +77,7 @@ def main():
             'installationGuideSHA256': hashlib.sha256(guide.encode()).hexdigest(),
             'repository': 'https://github.com/lrc839-tech/ClipFlow',
         }, ensure_ascii=False, indent=2) + '\n')
-        run('/usr/bin/hdiutil', 'create', '-volname', f'ClipFlow {version}',
+        run('/usr/bin/hdiutil', 'create', '-volname', f'mac复制工具 {version}',
             '-srcfolder', str(stage), '-format', 'UDZO', '-ov', str(output))
     run('/usr/bin/hdiutil', 'verify', str(output))
     assert digest(binary) == before, 'source executable changed during packaging'

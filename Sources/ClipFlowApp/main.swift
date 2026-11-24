@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import ServiceManagement
 import ClipFlowCore
 
 @MainActor
@@ -28,10 +29,20 @@ final class ClipFlowDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var menuTracking = false
     private var registrations: [HotKeyRegistration] = []
     private var records: [HistoryRecord] = []
+    private var slotRecords: [HistoryRecord?] = Array(repeating: nil, count: 12)
+    private var fixedSlots = ShortcutSlots()
+    private lazy var loginLaunch = LoginLaunchController(defaults: .standard, state: {
+        switch SMAppService.mainApp.status {
+        case .enabled: return .enabled
+        case .requiresApproval: return .requiresApproval
+        case .notRegistered: return .notRegistered
+        default: return .notFound
+        }
+    }, register: { try SMAppService.mainApp.register() }, unregister: { try SMAppService.mainApp.unregister() })
     private var statusItem: NSStatusItem!
     private var window: NSWindow!
     private var browser: HistoryBrowser!
-    private var browserIDs: [UUID] = []
+    private var browserIDs: [UUID?] = []
     private var monitor: ClipboardMonitor!
     private var ready = false
     private var lastDiagnostic = "正在恢复历史…"
@@ -49,12 +60,13 @@ final class ClipFlowDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        statusItem.button?.title = "CF"
+        statusItem.button?.title = "复制"
         monitor = ClipboardMonitor(onCapture: { [weak self] snapshot, source in
             self?.actions.enqueue(.capture(snapshot, source))
         }, onDiagnostic: { [weak self] message in self?.diagnostic(message) })
         monitor.excludedBundleIDs = Set(UserDefaults.standard.stringArray(forKey: "excludedBundleIDs") ?? [])
         monitor.paused = UserDefaults.standard.bool(forKey: "monitorPaused")
+        loginLaunch.start()
         makeWindow()
         hotkeys.onPress = { [weak self] slot in self?.enqueuePaste(slot) }
         refreshHotKeys()
@@ -75,7 +87,8 @@ final class ClipFlowDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .reload:
             guard let store else { return }
             do {
-                records = try await store.load(limit: 12)
+                fixedSlots = try ShortcutSlots.load(from: .standard)
+                try await refreshRecords()
                 ready = true
                 if !quitting { monitor.start() }
                 diagnostic("历史已恢复。复制新内容后可用配置的12个全局快捷键。启动时剪贴板不重复导入。")
@@ -88,7 +101,7 @@ final class ClipFlowDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 if autoCompleteImages && RichTextImageCompletion.canComplete(snapshot) { enqueueImages(record.id) }
             } catch { diagnostic("本次复制未保存成功，请保留原内容：\(error.localizedDescription)"); return }
             do {
-                records = try await store.load(limit: 12)
+                try await refreshRecords()
                 lastDiagnostic = "已保存复制内容；粘贴不会改变顺序。"
                 updateMenu(); writeReport()
             } catch {
@@ -100,7 +113,7 @@ final class ClipFlowDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             do {
                 switch command {
                 case "pin": if let id { try await store.moveToFront(id: id) }
-                case "delete": if let id { try await store.delete(id: id) }
+                case "delete": if let id { try await store.delete(id: id); fixedSlots.remove(id); try fixedSlots.save(to: .standard) }
                 case "copy":
                     if let id, let record = try await store.load(limit: 1, id: id).first {
                         monitor.tick()
@@ -108,6 +121,18 @@ final class ClipFlowDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         try snapshot.validateFileReferences()
                         let count = try snapshot.write(to: .general, onClaim: { self.monitor.suppress($0) })
                         monitor.suppress(count)
+                    }
+                case "launchToggle": loginLaunch.apply(!loginLaunch.desiredEnabled)
+                case "launchRetry": loginLaunch.apply(loginLaunch.desiredEnabled)
+                case "launchSettings": SMAppService.openSystemSettingsLoginItems()
+                case let value where value.hasPrefix("fixSlot:"):
+                    if let id, let slot = Int(value.dropFirst(8)), (1...12).contains(slot),
+                       try await store.load(limit: 1, id: id).first != nil {
+                        fixedSlots.bind(id, to: slot); try fixedSlots.save(to: .standard)
+                    }
+                case let value where value.hasPrefix("unfixSlot:"):
+                    if let slot = Int(value.dropFirst(10)), (1...12).contains(slot) {
+                        fixedSlots.bind(nil, to: slot); try fixedSlots.save(to: .standard)
                     }
                 case "imageCompletionToggle":
                     autoCompleteImages.toggle()
@@ -126,7 +151,7 @@ final class ClipFlowDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 case "quit": quit(); return
                 default: return
                 }
-                records = try await store.load(limit: 12)
+                try await refreshRecords()
                 updateMenu(); writeReport()
                 browser.refresh()
                 browser.notify(command == "copy" ? "已复制，可到目标应用粘贴。" : command == "pin" ? "已移到第一条，新复制内容会排到它前面。" : "设置已更新。")
@@ -134,10 +159,9 @@ final class ClipFlowDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case let .paste(slot, pid, receivedAt, revision):
             guard takeover.shouldCapture, revision == takeover.revision else { diagnostic("接管状态或前台应用已变化，已取消排队粘贴。"); return }
             guard ready else { diagnostic("历史尚未安全加载，未发送粘贴。", beep: true); return }
-            guard records.indices.contains(slot - 1) else { diagnostic("第 \(slot) 条暂无记录，未发送输入。", beep: true); return }
+            guard slotRecords.indices.contains(slot - 1), let record = slotRecords[slot - 1] else { diagnostic("第 \(slot) 条暂无记录，未发送输入。", beep: true); return }
             // A single FIFO orders capture/save and paste actions. Later copies cannot
             // change the chosen slot while this immutable snapshot is being pasted.
-            let record = records[slot - 1]
             // A copy made after the shortcut but before this job executes must be
             // captured before a temporary clipboard write can hide its revision.
             monitor.tick()
@@ -147,11 +171,12 @@ final class ClipFlowDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 let outcome = try await pasteService.paste(snapshot: try await snapshotForPaste(record), targetPID: pid,
                                                            clipboardMode: clipboardMode,
                                                            waitMilliseconds: clipboardWait,
+                                                           restoreClipboard: false, synchronizeClipboard: true,
                                                            shouldContinue: { self.takeover.shouldCapture && revision == self.takeover.revision && !self.quitting },
                                                            onBoardChange: { [weak self] count in self?.monitor.suppress(count) })
                 event["state"] = "posted-unconfirmed"; event["path"] = outcome.path
                 event["restoreSkippedForNewCopy"] = outcome.restoreSkipped
-                lastDiagnostic = outcome.restoreSkipped ? "已发送；检测到新复制，保留了新剪贴板。目标消费未确认。" : "已发送，目标接收未自动确认；历史顺序未改动。"
+                lastDiagnostic = outcome.restoreSkipped ? "已发送；检测到新复制，保留了新剪贴板。目标消费未确认。" : "已发送，目标接收未自动确认；系统剪贴板路径保留所选历史，历史顺序未改动。"
             } catch {
                 event["state"] = "failed"; event["reason"] = error.localizedDescription
                 lastDiagnostic = "粘贴失败：\(error.localizedDescription)"
@@ -213,6 +238,21 @@ final class ClipFlowDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             lastDiagnostic = "菜单粘贴未完成。\(error.localizedDescription)"
             NSSound.beep()
         }
+    }
+
+    private func refreshRecords() async throws {
+        guard let store else { return }
+        var loaded: [UUID: HistoryRecord] = [:]
+        for id in Set(fixedSlots.bindings.values) {
+            if let record = try await store.load(limit: 1, id: id).first { loaded[id] = record }
+            else { fixedSlots.remove(id); try fixedSlots.save(to: .standard) }
+        }
+        let ids = fixedSlots.resolve(newest: try await store.newestIDs(limit: 24))
+        for id in Set(ids.compactMap { $0 }) where loaded[id] == nil {
+            if let record = try await store.load(limit: 1, id: id).first { loaded[id] = record }
+        }
+        slotRecords = ids.map { $0.flatMap { loaded[$0] } }
+        records = slotRecords.compactMap { $0 }
     }
 
     private func snapshotForPaste(_ record: HistoryRecord) async throws -> PasteboardSnapshot {
@@ -297,9 +337,10 @@ final class ClipFlowDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         item(monitor?.paused == true ? "恢复监听（跳过暂停期间内容）" : "暂停监听", #selector(togglePause))
         menu.addItem(.separator())
         if records.isEmpty { label(ready ? "暂无历史；请先复制内容" : "历史尚未加载") }
-        for (index, record) in records.enumerated() {
+        for (index, entry) in slotRecords.enumerated() {
+            guard let record = entry else { continue }
             let summary = (record.snapshot.summary).replacingOccurrences(of: "\n", with: " ↵ ").replacingOccurrences(of: "\r", with: " ")
-            item("\(takeover.settings.scheme.symbol)\(HotKeyService.labels[index])  \(summary.prefix(64))", #selector(pasteFromMenu(_:)), tag: index + 1)
+            item("\(takeover.settings.scheme.symbol)\(HotKeyService.labels[index])  \(fixedSlots.bindings[index + 1] != nil ? "📌 " : "")\(summary.prefix(64))", #selector(pasteFromMenu(_:)), tag: index + 1)
             menu.items.last?.representedObject = record.id.uuidString
             if record.snapshot.contentKind == "file", let url = record.snapshot.fileURLs.first {
                 menu.items.last?.image = HistoryFileIcons.image(for: HistoryFilePresentation(url: url))
@@ -309,7 +350,11 @@ final class ClipFlowDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
         statusItem.menu = menu
-        browser.slots = records.map(\.id)
+        browser.slots = slotRecords.map { $0?.id }
+        browser.fixedBindings = fixedSlots.bindings
+        browser.fixedLabels = fixedSlots.bindings.mapValues { id in records.first(where: { $0.id == id })?.snapshot.summary ?? "" }
+        browser.launchEnabled = loginLaunch.desiredEnabled
+        browser.launchStatus = loginLaunch.statusText
         browser.hotkeyScheme = takeover.settings.scheme
         browser.hotkeyEnabled = takeover.settings.enabled
         browser.hotkeyStatus = takeover.status
@@ -360,7 +405,7 @@ final class ClipFlowDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             else { self.actions.enqueue(.manage(command,id)) }
         }
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1080, height: 760), styleMask: [.titled,.closable,.miniaturizable,.resizable], backing: .buffered, defer: false)
-        window.title = "ClipFlow — 设置"
+        window.title = "mac复制工具 — 设置"
         window.isReleasedWhenClosed = false
         window.contentView = browser.view
         window.center(); window.makeKeyAndOrderFront(nil)
@@ -441,7 +486,9 @@ final class ClipFlowDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func writeReport() {
         let logs = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/ClipFlow")
-        var report: [String: Any] = ["stage": "v0.6.2-file-paste", "appVersion": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "",
+        var report: [String: Any] = ["stage": "v0.7.0-slots-login", "appVersion": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "",
+            "launchAtLoginDesired": loginLaunch.desiredEnabled, "launchAtLoginState": loginLaunch.state.rawValue,
+            "fixedSlots": Dictionary(uniqueKeysWithValues: fixedSlots.bindings.map { (String($0.key), $0.value.uuidString) }),
             "ready": ready, "paused": monitor?.paused ?? true,
             "accessibilityTrusted": AXIsProcessTrusted(), "postEventAllowed": CGPreflightPostEventAccess(),
             "autoCompleteDingTalkImages": autoCompleteImages, "pendingImageCount": pendingImageIDs.count, "menuImagePreviewCount": statusItem.menu?.items.filter { entry in

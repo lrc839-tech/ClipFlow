@@ -42,7 +42,7 @@ public final class TextPasteService {
     }
 
     public func paste(snapshot: PasteboardSnapshot, targetPID: pid_t, clipboardMode: Bool,
-                      waitMilliseconds: Int = 150, keepOnClipboard: Bool = false,
+                      waitMilliseconds: Int = 150, keepOnClipboard: Bool = false, restoreClipboard: Bool = true, synchronizeClipboard: Bool = false,
                       expectedClipboardChangeCount: Int? = nil,
                       shouldContinue: () -> Bool = { true }, onBoardChange: @escaping (Int) -> Void) async throws -> TextPasteOutcome {
         guard shouldContinue() else { throw TextPasteError.cancelled }
@@ -55,6 +55,10 @@ public final class TextPasteService {
         let preserveFormats = snapshot.requiresSystemPaste
 
         if !keepOnClipboard, !clipboardMode, !preserveFormats, let text, let chunks = Self.unicodeChunks(text) {
+            let board = NSPasteboard.general
+            if let expectedClipboardChangeCount, board.changeCount != expectedClipboardChangeCount { throw TextPasteError.clipboardChanged }
+            let selection = synchronizeClipboard ? try PasteboardLease(board: board, replacement: snapshot,
+                preserveOriginal: false, onChange: onBoardChange) : nil
             for units in chunks {
                 guard shouldContinue() else { throw TextPasteError.cancelled }
                 try checkFocus(targetPID)
@@ -62,12 +66,16 @@ public final class TextPasteService {
                 try post(units: units)
             }
             try await Task.sleep(nanoseconds: 5_000_000)
-            return TextPasteOutcome(path: "unicode; receipt unconfirmed", restoreSkipped: false)
+            let kept = selection?.keepReplacementIfOwned() ?? true
+            return TextPasteOutcome(path: synchronizeClipboard ? "unicode+clipboard-retained; receipt unconfirmed" : "unicode; receipt unconfirmed", restoreSkipped: !kept)
         }
 
         let board = NSPasteboard.general
         if let expectedClipboardChangeCount, board.changeCount != expectedClipboardChangeCount { throw TextPasteError.clipboardChanged }
-        let lease = try PasteboardLease(board: board, replacement: snapshot.forSystemPaste, onChange: onBoardChange)
+        // Selecting history is a clipboard replacement. Do not require reading an
+        // unrelated current owner (which may be transient, concealed or unavailable).
+        let lease = try PasteboardLease(board: board, replacement: snapshot.forSystemPaste,
+            preserveOriginal: restoreClipboard && !keepOnClipboard, onChange: onBoardChange)
         var restored = false
         do {
             try await Task.sleep(nanoseconds: 10_000_000)
@@ -87,7 +95,7 @@ public final class TextPasteService {
             _ = try lease.restoreIfOwned()
             throw error
         }
-        if keepOnClipboard {
+        if keepOnClipboard || !restoreClipboard {
             let kept = lease.keepReplacementIfOwned()
             return TextPasteOutcome(path: "clipboard-retained; receipt unconfirmed", restoreSkipped: !kept)
         }
